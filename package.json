@@ -1,0 +1,33 @@
+{
+  "name": "ai-code-snippets",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.9",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.7",
+    "monaco-editor": "^0.56.0",
+    "pinia": "^4.0.2",
+    "pinyin-pro": "^3.28.2",
+    "vue": "^3.5.39",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.2",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "@vue/tsconfig": "^0.9.1",
+    "esbuild": "^0.28.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1",
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "vue-tsc": "^3.3.5"
+  }
+}

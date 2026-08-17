@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/* GitHub 蓝强调色 token：唯一的交互色，极低用量。
+   #0969DA 主蓝 / #0A52B8 hover 深蓝 / #DDF4FF 浅底（激活态、标签、高亮） */
+@theme {
+  --color-github-blue: #0969DA;
+  --color-github-blue-dark: #0A52B8;
+  --color-github-blue-light: #DDF4FF;
+  --color-github-blue-light-hover: #C8E1FF;
+}
+
+@layer base {
+  body {
+    @apply bg-zinc-100 text-zinc-900 font-sans;
+  }
+
+  /* 选区色：浅蓝底 + 深色文字，柔和不抢眼 */
+  ::selection {
+    background-color: var(--color-github-blue-light);
+    color: var(--color-zinc-900);
+  }
+
+  /* 全局焦点环：统一 GitHub 蓝外圈 + 白间隔，覆盖所有键盘可达元素（含输入类）。
+     !important 确保不被各组件自身的 shadow 类压掉 */
+  :where(button, a, [tabindex], input, select, textarea):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--color-github-blue) !important;
+  }
+
+  /* 无边框透明输入框（编辑标题/描述、AI 助手输入框等）：聚焦时不应出现整圈蓝框——
+     它们没有边框做参照，全局蓝环会包成一个大方框，很突兀。用 .plain-input 统一去掉 */
+  .plain-input:focus-visible {
+    outline: none;
+    box-shadow: none !important;
+  }
+
+  /* 语言选择弹层里的搜索框：打开即自动聚焦，蓝环绕成方框、下边缘压着列表像条蓝线。
+     弹层内就是要打字的位置，去掉蓝环（与 .plain-input 同理，同在 base 层内比特异性） */
+  .lang-select-pop input:focus-visible {
+    outline: none;
+    box-shadow: none !important;
+  }
+
+  /* 细滚动条：少占视觉宽度，贴合轻量感 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-zinc-300) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-zinc-300);
+    border-radius: 8px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-zinc-400);
+  }
+}
