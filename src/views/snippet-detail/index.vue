@@ -56,7 +56,7 @@ function goFolder(id: string) {
 }
 
 // --- 复制代码：就地反馈，按钮短暂变"已复制" ---
-// clipboard API 只在安全上下文（HTTPS/localhost）可用，非 HTTPS 环境降级 execCommand，保证任何环境都能复制
+// 现代浏览器 Clipboard API（标准异步剪贴板） 只在安全上下文（HTTPS/localhost）可用，非 HTTPS 环境降级 execCommand，保证任何环境都能复制
 const copied = ref(false)
 
 function legacyCopy(text: string): boolean {

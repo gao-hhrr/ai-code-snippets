@@ -103,7 +103,8 @@ export function loadAIConversation(): AssistantTurnMessage[] {
 export function persistAIConversation(messages: AssistantTurnMessage[]) {
   try {
     sessionStorage.setItem(AI_CONVERSATION_KEY, JSON.stringify(messages))
-  } catch {
-    // 忽略存储失败（如配额超限，静默放弃落盘）
+  } catch (err) {
+    // 写入失败（配额/隐私模式等）：不静默，控制台定位是写入失败而非渲染/恢复问题
+    console.warn('[ai-persist] AI 对话写入 sessionStorage 失败', err)
   }
 }

@@ -6,7 +6,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import type { Ref } from 'vue'
 
 
-const DRAFT_KEY = 'code-snippets:draft'
+export const DRAFT_KEY = 'code-snippets:draft'
 
 // 草稿只进 sessionStorage：页面刷新不丢内容，标签页关闭自动清除，
 // 不会长期占用本地存储，也不会把上次未保存的内容带到下次新建。
@@ -18,6 +18,8 @@ export function useDraft(opts: {
   language: Ref<string>
   description: Ref<string>
   baseline: { title: string; code: string; language: string; description: string }
+  // 确认离开后触发（删草稿前）：编辑页借此向 AI 页回传「未保存」结果
+  onConfirmedLeave?: () => void
 }) {
   const { id, title, code, language, description, baseline } = opts
   let cleared = false// 是否已保存过
@@ -25,12 +27,16 @@ export function useDraft(opts: {
   let saveTimer: ReturnType<typeof setTimeout> | null = null// 防抖定时器句柄
 
   // 语言不计入「未保存」判断：下拉选择是轻量调整，改了不弹确认（但草稿仍会保存语言，刷新可恢复）
-  //有没有改动的判断
+  // 已保存快照：保存成功后记下当时的 title/code/description，作为后续「是否又改了」的基准。
+  // 不能用 baseline 当基准：baseline 是进页面时的内容，保存过一次后再编辑时它仍是旧值，
+  // 加上旧逻辑「cleared 直接放行」，会导致保存后再改、离开时不再弹确认（bug）
+  let snapshot = { title: baseline.title, code: baseline.code, description: baseline.description }
+
+  // 有没有改动的判断（与快照比，而非与进页面时的 baseline 比）
   const isDirty = computed(() =>
-    title.value !== baseline.title ||
-    code.value !== baseline.code ||
-    description.value !== baseline.description
-    
+    title.value !== snapshot.title ||
+    code.value !== snapshot.code ||
+    description.value !== snapshot.description
   )
 
   //进页面恢复草稿
@@ -70,6 +76,9 @@ export function useDraft(opts: {
 
   //是否显示弹窗
   const showConfirm = ref(false)
+  //存储Promise的resolve回调，初始为null
+  //ts类型约束,这个函数function(ok){}接收一个布尔值参数（true/false）,执行完不返回
+  //正好与function resolve(布尔值) {}对应
   let confirmResolver: ((ok: boolean) => void) | null = null
 
   function confirmLeaveDialog(): Promise<boolean> {
@@ -83,7 +92,7 @@ export function useDraft(opts: {
   function handleConfirmOk() {
     showConfirm.value = false
     leavingDiscard = true
-    confirmResolver?.(true)//  ?.是可选链，confirmResolver可能是null(从未弹窗过)。可选链保证"没弹过窗就不调用",避免报错
+    confirmResolver?.(true)//  ?是可选链，confirmResolver可能是null(从未弹窗过)。可选链保证"没弹过窗就不调用",避免报错
     confirmResolver = null
   }
 
@@ -95,8 +104,7 @@ export function useDraft(opts: {
   }
 
   async function confirmLeave(): Promise<boolean> {
-    if (cleared) return true// 已保存过 → 直接放行
-    if (!isDirty.value) return true// 没改过 → 直接放行
+    if (!isDirty.value) return true// 没改过（含刚保存完，快照已更新）→ 直接放行
     return await confirmLeaveDialog()// 有改动 → 弹窗问用户
   }
 
@@ -109,9 +117,12 @@ export function useDraft(opts: {
   })
   
   //守卫函数
+  //Promise + await 的核心价值：阻塞代码执行，异步同步化
+  //让 JS 引擎停在那，等着人手动交互完成再往下走，这是弹窗二次确认最经典的封装方案。
   // 离开当前页（返回按钮/路由跳转）前，有未保存内容先弹确认
   onBeforeRouteLeave(async () => {
     if (!(await confirmLeave())) return false// 用户选「留下」→ 返回 false 阻止离开
+    opts.onConfirmedLeave?.()// 确认离开后才通知调用方（用户点「取消」留下时不触发）
     sessionStorage.removeItem(DRAFT_KEY)
     return true
   })
@@ -132,8 +143,10 @@ export function useDraft(opts: {
     showConfirm,
     handleConfirmOk,
     handleConfirmCancel,
-    // 保存成功后调用，标记本次会话已提交，后续离开不再弹确认
+    // 保存成功后调用：把已保存内容更新为「快照基准」并清草稿，
+    // 之后没再改就直接放行，改了仍会正常弹确认
     markCleared() {
+      snapshot = { title: title.value, code: code.value, description: description.value }
       cleared = true
       sessionStorage.removeItem(DRAFT_KEY)
     }

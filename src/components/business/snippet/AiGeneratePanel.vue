@@ -23,10 +23,11 @@ const description = ref('')
 const language = defineModel<string>('language', { default: 'JavaScript' })
 const generating = ref(false)// 是否生成中,控制按钮显示哪个
 const error = ref('')
-const done = ref(false)//流式是否已结束(完成后才允许"应用")
+const done = ref(false)//生成完成标记,流式是否已结束(完成后才允许"应用")
 let abortCtrl: AbortController | null = null// AbortController,供「停止」中断请求
 
 async function generate(isRestart = false) {
+  //描述为空或已在生成中，直接 return——防止连点「生成」发多个请求
   if (!description.value.trim() || generating.value) return
 
   error.value = ''
@@ -34,6 +35,7 @@ async function generate(isRestart = false) {
   if (!isRestart) emit('generating')//首次生成才通知父暂存
 
   //中断句柄
+  //AbortController()浏览器原生 API，用来中途终止 fetch/axios/ 流式请求,自带signal 属性 和 abort() 方法
   const ctrl = new AbortController()
   abortCtrl = ctrl
   generating.value = true
@@ -41,6 +43,8 @@ async function generate(isRestart = false) {
 
   try {
     const result = await generateCode(description.value.trim(), language.value, {
+      //把 ctrl.signal 传给接口函数（generateCode 的 opts.signal）请求内部会监听这个 signal，一旦 signal 被触发终止，就取消网络。
+      //它的值是另一个对象：AbortSignal
       signal: ctrl.signal,
       //流式回调
       onChunk: (chunk) => {

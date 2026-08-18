@@ -91,6 +91,17 @@ defineExpose({ focusInput: () => inputEl.value?.focus() })
           </div>
           <div class="flex items-center justify-center gap-2 mt-2.5">
             <button
+              class="px-2 py-1 text-sm rounded-md cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              :class="assistantStore.deepThink
+                ? 'bg-github-blue-light text-github-blue'
+                : 'text-zinc-500 hover:text-zinc-700'"
+              title="深度思考：生成/修改代码时先深度推理再作答，复杂需求质量更高但更慢（开启后最长约 180 秒）；关闭则用普通模式直接输出、更快"
+              :disabled="assistantStore.sending"
+              @click="assistantStore.deepThink = !assistantStore.deepThink"
+            >深度思考</button>
+            <span class="text-xs text-zinc-400 select-none">仅代码生成/修改</span>
+            <span class="text-zinc-300 select-none">·</span>
+            <button
               class="px-2 py-1 text-sm text-zinc-500 hover:text-zinc-700 rounded-md cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               title="换话题：下一条消息不带上文，但保留对话记录"
               :disabled="assistantStore.sending || assistantStore.messages.length === 0"

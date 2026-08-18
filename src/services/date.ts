@@ -1,6 +1,13 @@
 // ════════════════════════════════════════════════════════
-// services/date.ts —— 日期格式化：列表相对时间 formatTime + 详情完整时间 formatFullTime + AI 候选标注 fmtDate
+// services/date.ts —— 日期：相对时间 formatTime + 完整时间 formatFullTime + AI 候选标注 fmtDate + 最近 N 天判断 isWithinDays
 // ════════════════════════════════════════════════════════
+
+// 是否在最近 days 天内（列表页「最近一周」筛选与统计共用；非法日期返回 false）
+export function isWithinDays(iso: string, days: number): boolean {
+  const t = new Date(iso).getTime()
+  if (isNaN(t)) return false
+  return t > Date.now() - days * 24 * 60 * 60 * 1000
+}
 
 // 列表卡片：今天显示 HH:mm，昨天显示「昨天」，今年显示 M/d，跨年带年份 yyyy/M/d
 export function formatTime(iso: string) {

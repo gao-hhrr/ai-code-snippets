@@ -5,6 +5,7 @@
 import { ref, computed, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSnippetStore } from '@/stores/snippetStore'
+import { useAiAssistantStore } from '@/stores/aiAssistantStore'
 import { useDraft } from '@/composables/useDraft'
 import { detectLanguage } from '@/services/file'
 import { LANGUAGES } from '@/services/languages'
@@ -21,6 +22,7 @@ const { MonacoEditor } = useMonacoAsync()
 const route = useRoute()//拿当前路由信息
 const router = useRouter()
 const snippetStore = useSnippetStore()
+const aiStore = useAiAssistantStore()
 
 const isEdit = computed(() => route.name === 'snippet-edit')
 //现存的
@@ -50,6 +52,9 @@ function handleAiApply() {
 }
 
 // AI 生成预览：生成前暂存编辑器内容（供「放弃」恢复），生成结果流式填入编辑器
+// 为什么生成前就要暂存？
+// 因为生成结果是流式直接写进编辑器的——它已经在"污染"编辑器里的内容了。
+// 暂存原文，是给「放弃」留的后路：用户对结果不满意，一键恢复到生成前。
 const preAiCode = ref('')
 //暂存编辑器内容
 function handleAiGenerating() {
@@ -80,6 +85,14 @@ const { isDirty, showConfirm, handleConfirmOk, handleConfirmCancel, markCleared 
     code: existing.value?.code || '',
     language: existing.value?.language || 'JavaScript',
     description: existing.value?.description || ''
+  },
+  // 确认离开编辑页后回传「未保存」（保存路径已回传 true，此对已保存场景是 no-op）。
+  // 之前误写在 handleSave 里，只有点过保存才注册守卫 → 不保存直接离开时回传丢失，
+  // AI 页卡片停在「已进入编辑页」，提示与实况不符且无入口重进。
+  // from=ai（create 新建）与 from=ai-modify（modify 另存）分别回传给对应在途消息
+  onConfirmedLeave: () => {
+    if (route.query.from === 'ai') aiStore.resolveCreateFromEditor(false)
+    else if (route.query.from === 'ai-modify') aiStore.resolveModifyFromEditor(false)
   }
 })
 
@@ -141,11 +154,22 @@ function handleSave() {
 
   saving.value = false
   markCleared()
+  // 从 AI 助手进入：保存成功回传结果，AI 页卡片显示「已保存入库」+ 查看入口。
+  // from=ai（create 新建）与 from=ai-modify（modify 另存）分别回传给对应在途消息
+  if (route.query.from === 'ai') aiStore.resolveCreateFromEditor(true, savedId)
+  else if (route.query.from === 'ai-modify') aiStore.resolveModifyFromEditor(true, savedId)
   // 描述留空 → 保存后 AI 异步生成（不阻塞跳转）
   if (!description.value.trim()) {
     snippetStore.ensureDescription(isEdit.value && existing.value ? existing.value.id : savedId)
   }
-  router.push('/')
+  // 从 AI 助手进入（?from=ai / from=ai-modify）：保存后用 back 回到栈里已有的 AI 页条目——
+  // push('/ai') 会新增一条重复的 /ai，历史栈变成 [/ /ai /new /ai]，返回时在编辑页↔AI 页之间来回循环
+  if (route.query.from === 'ai' || route.query.from === 'ai-modify') {
+    if (window.history.state?.back) router.back()
+    else router.push('/ai')
+  } else {
+    router.push('/')
+  }
 }
 </script>
 
@@ -256,7 +280,9 @@ function handleSave() {
     <ConfirmDialog
       :show="showConfirm"
       title="未保存的更改"
-      message="有未保存的内容，确定要离开吗？离开后未保存的内容将丢失。"
+      :message="route.query.from === 'ai' || route.query.from === 'ai-modify'
+        ? 'AI 生成/修改的内容不会因离开而丢失——可稍后在 AI 对话卡片中重新进入编辑。确定离开吗？'
+        : '有未保存的内容，确定要离开吗？离开后未保存的内容将丢失。'"
       confirm-text="离开"
       cancel-text="取消"
       danger

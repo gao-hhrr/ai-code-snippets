@@ -5,14 +5,14 @@
 //           assistant（AI 助手核心：召回 + 校验/分发）/ assistantPrompt（prompt 组装）
 export type {
   ChatMessage,
-  CodeContext,
   SearchSnippet,
   SearchFolder,
   AssistantTurnMessage,
   AssistantReply,
-  OperateOp
+  OperateOp,
+  OperateStep
 } from './types'
 export { AIError, isAbortError } from './client'
 export type { AIErrorCode } from './client'
-export { chatAboutCode, generateDescription, generateCode, modifyCode } from './tasks'
-export { assistantTurn, summarizeThinking } from './assistant'
+export { generateDescription, generateCode, modifyCode } from './tasks'
+export { assistantTurn, summarizeThinking, REVERSIBLE_OPS } from './assistant'

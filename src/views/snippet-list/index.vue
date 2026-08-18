@@ -97,7 +97,7 @@ function scrollToTop() {
         <div class="max-w-7xl mx-auto">
           <ListToolbar />
 
-          <EmptyState v-if="snippetStore.loading || snippetStore.filteredSnippets.length === 0" />
+          <EmptyState v-if="snippetStore.filteredSnippets.length === 0" />
 
           <!-- 批量模式下底部留白，让最后一行卡片能滚到悬浮操作条上方 -->
           <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-4" :class="snippetStore.batchMode ? 'pb-16' : ''">

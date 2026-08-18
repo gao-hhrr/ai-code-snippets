@@ -3,11 +3,17 @@
      props: msg + originalCode（父按 searchIds 取原代码传入）；AI 只给建议，落库靠父确认
      ════════════════════════════════════════════════════════ -->
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { AssistantTurnMessage } from '@/api/ai'
 import DiffView from '@/components/editor/DiffView.vue'
+import { useAiAssistantStore } from '@/stores/aiAssistantStore'
 
 const props = defineProps<{ msg: AssistantTurnMessage; originalCode: string }>()
-const emit = defineEmits<{ saveAsNew: []; replace: []; export: [] }>()
+const emit = defineEmits<{ saveAsNew: []; replace: []; export: []; undoReplace: []; view: [snippetId: string] }>()
+
+const assistantStore = useAiAssistantStore()
+// 等待提示随深度思考开关变化：开启时推理更长，超时放宽到 180s
+const waitHint = computed(() => assistantStore.deepThink ? '深度思考中，复杂需求最长约 180 秒，请稍候' : '代码较长或 AI 推理较慢时最长约 90 秒，请稍候')
 </script>
 
 <template>
@@ -38,18 +44,23 @@ const emit = defineEmits<{ saveAsNew: []; replace: []; export: [] }>()
           <span>正在根据需求生成修改后的代码…</span>
           <span v-if="props.msg.modifyProgress" class="text-zinc-400">（已生成 {{ props.msg.modifyProgress }} 字）</span>
         </div>
-        <p class="text-xs text-zinc-400">代码较长或 AI 推理较慢时最长约 90 秒，请稍候</p>
+        <p class="text-xs text-zinc-400">{{ waitHint }}</p>
       </div>
       <!-- 失败 -->
       <p v-else-if="props.msg.modifyState === 'error'" class="text-sm text-red-500">{{ props.msg.content }}</p>
       <!-- 完成：AI 提醒 + diff + 确认操作 -->
       <template v-else-if="props.msg.modifyState === 'done' && props.msg.modifiedCode">
         <p class="text-sm text-zinc-600 mb-3">{{ props.msg.note || '请确认以下改动，确认后才写入你的代码库。' }}</p>
+        <div
+          v-if="props.msg.modifiedDegraded"
+          class="mb-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 leading-relaxed"
+        >⚠ 深度思考未生效，已降级为普通模式修改——本次修改未经过深度推理，复杂需求下质量可能打折。</div>
         <DiffView :original="props.originalCode" :modified="props.msg.modifiedCode" />
         <div class="mt-3 flex flex-wrap gap-3">
           <button
             class="inline-flex items-center gap-1.5 px-4 py-2 bg-github-blue text-white rounded-lg text-sm font-medium hover:bg-github-blue-dark transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             :disabled="props.msg.modifyApplied"
+            title="保存前可在编辑页调整标题/语言/代码"
             @click="emit('saveAsNew')"
           >保存为新片段</button>
           <button
@@ -62,8 +73,27 @@ const emit = defineEmits<{ saveAsNew: []; replace: []; export: [] }>()
             class="inline-flex items-center gap-1.5 px-4 py-2 text-github-blue bg-github-blue-light rounded-lg text-sm hover:bg-github-blue-light-hover transition-colors cursor-pointer"
             @click="emit('export')"
           >导出</button>
+          <button
+            v-if="props.msg.modifyApplied && props.msg.modifyBackup"
+            class="inline-flex items-center gap-1.5 px-4 py-2 text-red-600 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors cursor-pointer"
+            title="用替换前暂存的原代码恢复该片段"
+            @click="emit('undoReplace')"
+          >撤销替换</button>
         </div>
-        <p v-if="props.msg.modifyApplied" class="text-xs text-github-blue mt-2">已应用到代码库</p>
+        <!-- 提示「保存为新片段」的真实行为（跳编辑页再确认），避免用户以为点了立即落库 -->
+        <p v-if="!props.msg.modifyApplied && !props.msg.modifySave" class="text-xs text-zinc-400 mt-2">
+          点「保存为新片段」会先进入编辑页，可调整标题/语言/代码后再保存。
+        </p>
+        <p v-if="props.msg.modifyApplied" class="flex items-center gap-1.5 text-xs text-github-blue mt-2">
+          <span>{{ props.msg.modifyBackup ? '已替换原代码' : '已保存为新片段' }}</span>
+          <a
+            v-if="props.msg.modifySavedSnippetId"
+            class="underline cursor-pointer hover:text-github-blue-dark"
+            @click="emit('view', props.msg.modifySavedSnippetId as string)"
+          >查看</a>
+        </p>
+        <p v-else-if="props.msg.modifySave === 'pending'" class="text-xs text-zinc-500 mt-2">正在编辑页确认保存…</p>
+        <p v-else-if="props.msg.modifySave === false" class="text-xs text-zinc-500 mt-2">未保存——可点「保存为新片段」重新进入编辑</p>
       </template>
     </div>
   </div>

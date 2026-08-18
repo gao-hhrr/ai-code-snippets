@@ -6,6 +6,7 @@ import { ref, computed, watch } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { useRouter, useRoute } from 'vue-router'
 import type { FilterType } from '@/stores/snippetStore'
+import { isWithinDays } from '@/services/date'
 import NavFolders from '@/components/business/folder/NavFolders.vue'
 import AppIcon from '@/components/global/base/AppIcon.vue'
 
@@ -41,10 +42,9 @@ watch(
   }
 )
 
-const recentCount = computed(() => {
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-  return snippetStore.snippets.filter(s => new Date(s.createdAt).getTime() > weekAgo).length
-})
+const recentCount = computed(() =>
+  snippetStore.snippets.filter(s => isWithinDays(s.createdAt, 7)).length
+)
 </script>
 
 <template>

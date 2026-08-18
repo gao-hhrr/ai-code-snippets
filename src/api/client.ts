@@ -83,6 +83,12 @@ export interface ChatOptions {
   maxTokens?: number
   signal?: AbortSignal
   onChunk?: (delta: string) => void
+  // 深度思考开关：false 时请求体带 thinking:{type:'disabled'}，跳过推理过程直出答案（快、稳）；
+  // 缺省/true 走推理模型默认行为。v4 系列实测该参数有效（reasoning.enabled 无效）
+  thinking?: boolean
+  // 推理强度档位：实测 v4-flash 上只有 'low' 真正钳制思考（默认/medium/high 都会思考到吃光 max_tokens），
+  // 深度思考开启时用它限制思考预算，保证 content 有空间输出。max_reasoning_tokens 参数无效
+  reasoningEffort?: 'low' | 'medium' | 'high'
   // 推理模型的思考过程流（reasoning_content）：逐段回调，UI 展示"AI 正在思考…"实时滚动
   onReasoning?: (delta: string) => void
   // 503 过载开始退避重试时回调（attempt：即将进行的第几次尝试，1 起）
@@ -133,7 +139,11 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
           messages: options.messages,
           // 注册了工具就带 tools；tool_choice:'auto' 让模型优先走结构化工具调用，
           // 不走工具时 content 直出 JSON 由调用方降级解析（DeepSeek 对 'required' 支持不如 'auto' 稳）
-          ...(options.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {})
+          ...(options.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
+          // 深度思考开关：false 时显式禁用推理（v4 系列支持，实测无 thinking 输出、content 直出）
+          ...(options.thinking === false ? { thinking: { type: 'disabled' } } : {}),
+          // 推理强度：深度思考开启时钳制思考预算（实测仅 'low' 生效，其他档位照样吃光 max_tokens）
+          ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {})
         })
       })
     } catch (err) {

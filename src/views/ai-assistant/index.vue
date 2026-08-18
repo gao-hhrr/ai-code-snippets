@@ -40,11 +40,12 @@ function resultSnippets(all: Snippet[], ids: string[]): Snippet[] {
 }
 
 // 进入页面聚焦输入框 + 处理 ?snippet 预置。在 onMounted 与 onActivated 都调用：
-// KeepAlive 缓存时每次重新进入走 onActivated；未缓存重挂载时走 onMounted（重复执行无害，seedContext 幂等）
+// KeepAlive 缓存时每次重新进入走 onActivated；未缓存重挂载时走 onMounted
+// （seedContext 保留旧对话只追加：新片段会种入，同片段重复进入由 store 内去重跳过）
 function prepareEntry() {
   inputBar.value?.focusInput()
   // 从详情页进入：把该片段预置为对话前提（结果消息），召回机制天然继承，可直接说"改成 xx"。
-  // 不去判 messages 是否为空：即使已有旧对话，也从新片段详情页进来 = 切换上下文（seedContext 内部替换旧种子）
+  // seedContext 只追加不清空：已有旧对话保留，新旧片段都能选中；同片段重复进入由 store 去重
   const preId = typeof route.query.snippet === 'string' ? route.query.snippet : undefined
   if (preId) {
     const s = snippetStore.snippets.find(x => x.id === preId)
@@ -97,6 +98,16 @@ function doReplace() {
   if (replaceTarget.value) assistantStore.replaceModify(replaceTarget.value)
   replaceTarget.value = null
 }
+// "保存为新片段"不直接落库：写草稿跳编辑页预填（标题/语言继承原片段），用户改好点保存才入库。
+// from=ai-modify 区分于 create 的 from=ai，编辑页据此回传给 resolveModifyFromEditor
+function saveModifyToEditor(msg: AssistantTurnMessage) {
+  assistantStore.saveModifyToEditor(msg)
+  router.push({ path: '/snippet/new', query: { from: 'ai-modify' } })
+}
+// 撤销替换：用替换前暂存的原代码恢复该片段
+function undoReplace(msg: AssistantTurnMessage) {
+  assistantStore.undoReplace(msg)
+}
 
 // 危险/不可逆操作名单：单源定义在页面——既驱动 OperateCard 的红/蓝配色（经 :danger 传入），
 // 也决定确认后是否再弹双重确认。避免页面与卡片各自维护一份名单
@@ -110,6 +121,10 @@ function confirmOperateAction(msg: AssistantTurnMessage) {
   // 删除 / 清空 / 删除收藏夹不可逆，确认卡后再弹一道确认框双重确认
   if (isDangerOperate(msg.operateOp)) {
     confirmOpTarget.value = msg
+  } else if (msg.operateOp === 'create') {
+    // 新建不直接入库：确认后转入编辑页看完整代码（草稿预填），用户改好点保存才真正入库
+    assistantStore.confirmCreateToEditor(msg)
+    router.push({ path: '/snippet/new', query: { from: 'ai' } })
   } else {
     assistantStore.confirmOperate(msg)
   }
@@ -204,9 +219,11 @@ watch(
                   v-if="msg.modifyState"
                   :msg="msg"
                   :original-code="resultSnippets(snippetStore.snippets, msg.searchIds ?? [])[0]?.code ?? ''"
-                  @save-as-new="assistantStore.saveModifyAsNew(msg)"
+                  @save-as-new="saveModifyToEditor(msg)"
                   @replace="confirmReplace(msg)"
                   @export="assistantStore.exportModify(msg)"
+                  @undo-replace="undoReplace(msg)"
+                  @view="openSnippet"
                 />
                 <!-- AI 库操作确认卡：AI 提议删除/重命名/收藏/导出，用户确认后才执行 -->
                 <OperateCard
@@ -217,6 +234,7 @@ watch(
                   :danger="isDangerOperate(msg.operateOp)"
                   @confirm="confirmOperateAction(msg)"
                   @cancel="assistantStore.cancelOperate(msg)"
+                  @view="openSnippet"
                 />
                 <!-- 思考过程：折叠面板，结果出来后默认收起；有四步总结显示总结，缺失则兜底展示原文 -->
                 <ThinkingFold v-if="msg.thinkingSummary || msg.reasoning" :msg="msg" />

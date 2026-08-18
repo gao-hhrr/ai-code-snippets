@@ -10,7 +10,7 @@
 import { chat } from './client'
 import { AIError, isAbortError } from './client'
 import type { ChatResult, ChatTool } from './client'
-import type { AssistantTurnMessage, AssistantReply, OperateOp, ChatMessage, SearchSnippet, SearchFolder } from './types'
+import type { AssistantTurnMessage, AssistantReply, OperateOp, OperateStep, ChatMessage, SearchSnippet, SearchFolder } from './types'
 import { buildAssistantPrompt, buildSummaryPrompt } from './assistantPrompt'
 
 // 推理模型 reasoning_content 与 content 共用 max_tokens 预算：超长推理会把 content 挤空。
@@ -25,6 +25,25 @@ const RECALL_LIMIT = 25
 
 const VALID_OPS: OperateOp[] = ['delete', 'rename', 'export', 'favorite', 'unfavorite', 'create', 'clear', 'createFolder', 'renameFolder', 'deleteFolder', 'clearFolder', 'meta']
 const ACTIONS = ['search', 'summarize', 'modify', 'operate', 'ask', 'chat'] as const
+// 按长度倒序：长 op（unfavorite/clearFolder…）先匹配，避免 favorite 抢在 unfavorite、clear 抢在 clearFolder 前
+const VALID_OPS_BY_LENGTH = [...VALID_OPS].sort((a, b) => b.length - a.length)
+
+// 模型偶发在 op 字段里混入 XML 工具调用残留（实测如 favorite"><parameter name="ids">[1]），
+// 导致 op 校验失败、复合操作整轮掉进通用 ask。从字符串开头匹配最长的合法 op 前缀救回污染值。
+function matchOp(value: unknown): OperateOp | null {
+  if (typeof value !== 'string') return null
+  const v = value.trim()
+  for (const op of VALID_OPS_BY_LENGTH) {
+    if (v.startsWith(op)) return op
+  }
+  return null
+}
+
+// 可逆/低风险操作：单操作时 store 直接执行（不弹确认卡）；复合操作（ops）也仅限这些——
+// 一条指令做多件事（建夹+放入、改名+收藏、移动等）时逐条直接落地。
+// 导出供 store 复用（单一事实源）。不可逆/需确认的 delete/clear/deleteFolder/clearFolder 与
+// 转编辑页的 create 不在此列：单操作走确认卡，复合操作则转 ask 提示分步。
+export const REVERSIBLE_OPS: OperateOp[] = ['export', 'favorite', 'unfavorite', 'createFolder', 'rename', 'renameFolder', 'meta']
 
 // ---------- function calling 工具注册 ----------
 // 6 个动作各注册一个 tool，模型「选工具」代替「写 action 字段」。parameters 是 JSON Schema，
@@ -81,12 +100,27 @@ const ASSISTANT_TOOLS: ChatTool[] = [
     type: 'function',
     function: {
       name: 'operate',
-      description: '用户想做库结构操作（删除/重命名/导出/收藏/取消收藏/新建/清空/收藏夹管理/改描述或语言）。只能提议，绝不直接执行，实际写入由用户确认后前端完成。',
+      description: '用户想做库结构操作（删除/重命名/导出/收藏/取消收藏/新建/清空/收藏夹管理/改描述或语言）。只能提议，绝不直接执行，实际写入由用户确认后前端完成。一条指令做多件事时用 ops 数组列出所有步骤（仅限可逆操作：收藏/取消收藏/导出/新建夹/改名/移动/改描述语言）。',
       parameters: {
         type: 'object',
         properties: {
-          op: { type: 'string', enum: VALID_OPS, description: '操作类型' },
-          ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite 支持多个；create/clear/收藏夹类不需要）' },
+          op: { type: 'string', enum: VALID_OPS, description: '操作类型（单操作时用；用 ops 时忽略）' },
+          ops: {
+            type: 'array',
+            description: '复合操作：一次要求做多件事（如「新建收藏夹并把第 1 个放进去」）时按顺序列出所有步骤；每个步骤 op/ids/value/target/field 与单操作同义；只限可逆操作，不要包含删除/清空/新建代码',
+            items: {
+              type: 'object',
+              properties: {
+                op: { type: 'string', enum: VALID_OPS, description: '操作类型' },
+                ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite 支持多个；新建收藏夹并放入片段时，收藏那步写要放入的编号）' },
+                value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / 各 folder 操作的夹名 / meta 的新值' },
+                target: { type: 'string', description: 'renameFolder 的旧夹名（从「当前收藏夹」里选）' },
+                field: { type: 'string', enum: ['description', 'language'], description: 'meta 的目标字段' }
+              },
+              required: ['op']
+            }
+          },
+          ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite 支持多个；create/clear 不需要；新建收藏夹并放入片段时，用 ops 里第二步 favorite 的 ids）' },
           value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的标题或需求 / 各 folder 操作的夹名 / meta 的新值' },
           target: { type: 'string', description: 'renameFolder 的旧夹名（从「当前收藏夹」里选）' },
           field: { type: 'string', enum: ['description', 'language'], description: 'meta 的目标字段' },
@@ -211,6 +245,59 @@ function mapValidIds(ids: unknown, max: number): number[] {
   return [...new Set(
     Array.isArray(ids) ? ids.map(n => Number(n)).filter(n => Number.isInteger(n) && n >= 1 && n <= max) : []
   )]
+}
+
+// 复合操作（ops）里不允许的操作：不可逆需确认、或转编辑页，进 ops 会导致部分步骤静默丢失或确认粒度混乱
+const NON_COMPOSABLE_OPS = new Set<OperateOp>(['delete', 'clear', 'deleteFolder', 'clearFolder', 'create'])
+// 复合操作里混入新建代码时的引导文案：create 必须先编辑页确认保存，与收藏夹等同步操作无法一组落地。
+// 模型只会把用户完整意图写进 ops，这里统一转 ask 分两步（先建代码，再建夹+放入）——
+// 否则模型会随机只做其中一部分（实测：只建夹不建代码、或只建代码把收藏夹丢进 note）
+const CREATE_COMBO_ASK = '新建代码需要先进入编辑页确认保存，不能和收藏夹等操作一起做。建议分两步：先单独说「新建一个 xx 的代码」保存好，再对我说「新建收藏夹 xx，把刚才的放进去」，我一步完成。'
+
+// 复合操作单步校验：op 合法、参数齐全（片段编号/夹名/新值），且不是非可逆操作。
+// 任一步不过 → 整组转 ask 分步，避免「建夹了但片段没放进去」这类部分执行。
+function validateOperateStep(
+  raw: Record<string, unknown>,
+  candidates: SearchSnippet[]
+): { ok: true; step: OperateStep } | { ok: false; ask: string } {
+  const op = matchOp(raw.op)
+  if (!op) return { ok: false, ask: '我没太理解你想做什么操作，请说清楚，比如「把第一个删了」「收藏到默认收藏」。' }
+  if (NON_COMPOSABLE_OPS.has(op)) {
+    // create 是「转编辑页审阅保存」的异步流程，与同步可逆操作粒度不同，专门引导分两步并给出示例说法
+    if (op === 'create') {
+      return { ok: false, ask: CREATE_COMBO_ASK }
+    }
+    return { ok: false, ask: '这个操作包含删除/清空等不可逆步骤，需要单独确认。建议先做收藏/改名等可逆部分，删除/清空单独告诉我，我会弹确认框。' }
+  }
+  const value = typeof raw.value === 'string' && raw.value.trim() ? raw.value.trim() : ''
+  const toIds = (ids: unknown) => mapValidIds(ids, candidates.length).map(n => candidates[n - 1].id)
+  if (op === 'createFolder' || op === 'renameFolder' || op === 'deleteFolder' || op === 'clearFolder') {
+    if (op === 'renameFolder') {
+      const target = typeof raw.target === 'string' && raw.target.trim() ? raw.target.trim() : ''
+      if (!value || !target) return { ok: false, ask: '要把哪个收藏夹改叫什么名字？比如「把 学习 夹改名叫 工作」。' }
+      return { ok: true, step: { op, value, target } }
+    }
+    if (!value) {
+      const q = op === 'createFolder' ? '新夹想叫什么名字？比如「新建一个收藏夹叫 常用」。' : op === 'deleteFolder' ? '要删哪个收藏夹？告诉我夹名。' : '要清空哪个收藏夹？告诉我夹名。'
+      return { ok: false, ask: q }
+    }
+    return { ok: true, step: { op, value } }
+  }
+  if (op === 'meta') {
+    const field = raw.field === 'description' || raw.field === 'language' ? raw.field : null
+    if (!field || !value) return { ok: false, ask: '要改哪个片段的描述或语言？说下目标和新的值。' }
+    const ids = toIds(raw.ids)
+    if (ids.length === 0) return { ok: false, ask: '你想改哪个片段？告诉我是第几个。' }
+    return { ok: true, step: { op, ids, value, field } }
+  }
+  // rename / export / favorite / unfavorite：片段操作
+  const ids = toIds(raw.ids)
+  if (ids.length === 0) return { ok: false, ask: '你想操作哪个片段？告诉我是第几个，比如「把第一个收藏到 常用」。' }
+  if ((op === 'rename' || op === 'favorite' || op === 'unfavorite') && !value) {
+    const q = op === 'rename' ? '重命名成什么标题？' : op === 'favorite' ? '收藏到哪个收藏夹？' : '从哪个收藏夹移出？'
+    return { ok: false, ask: q }
+  }
+  return { ok: true, step: { op, ids, value: value || undefined } }
 }
 
 // 从查询中提取检索 token：英文/数字整词 + 中文相邻双字（bigram）。
@@ -436,7 +523,32 @@ export async function assistantTurn(
   }
 
   if (action === 'operate') {
-    const op = typeof obj?.op === 'string' && (VALID_OPS as string[]).includes(obj.op) ? (obj.op as OperateOp) : null
+    // 复合操作：一次指令做多件事（建夹+放入、改名+收藏、移动等）→ 逐条校验，任一步不过转 ask 分步
+    const rawOps = obj?.ops
+    if (Array.isArray(rawOps) && rawOps.length > 0) {
+      const rawStepList = rawOps as Record<string, unknown>[]
+      // 新建代码 + 收藏夹等混在一组：create 可能在任意位置（模型实测会放中间/末尾），先整组判定，
+      // 统一转 CREATE_COMBO_ASK 分步——避免逐条校验只卡住 create 而让收藏夹步骤先行部分执行
+      if (rawStepList.length > 1 && rawStepList.some(s => matchOp(s.op) === 'create')) {
+        return done('ask', { action: 'ask', text: CREATE_COMBO_ASK, ids: [], note: '' })
+      }
+      const steps: OperateStep[] = []
+      for (const raw of rawStepList) {
+        const v = validateOperateStep(raw, candidates)
+        if (!v.ok) {
+          return done('ask', { action: 'ask', text: v.ask, ids: [], note: '' })
+        }
+        steps.push(v.step)
+      }
+      return done('operate', {
+        action: 'operate',
+        text: '',
+        ids: [],
+        note: typeof obj?.note === 'string' && obj.note.trim() ? obj.note.trim() : '',
+        ops: steps
+      })
+    }
+    const op = matchOp(obj?.op)
     if (!op) {
       return done('ask', { action: 'ask', text: '我没太理解你想做什么操作，请说清楚，比如「把第一个删了」「收藏到默认收藏」。', ids: [], note: '' })
     }

@@ -25,7 +25,6 @@ const props = defineProps<{
 // ============ 2. emit：编辑器向外"广播"的事件 ============
 const emit = defineEmits<{
   'update:modelValue': [value: string]                          // 内容变了 → 上抛全文（v-model 的"改"方向）
-  'cursor-position': [pos: { line: number; column: number }]   // 光标位置变了（目前还没人用）
 }>()
 
 // container：模板里那个 div 的引用。Monaco 编辑器就"长"在这个 div 里。
@@ -109,13 +108,6 @@ onMounted(() => {
     emit('update:modelValue', editor!.getValue())
   })
 
-  // 编辑器 → 页面：光标位置变化（目前没被消费）
-  editor.onDidChangeCursorPosition((e) => {
-    emit('cursor-position', {
-      line: e.position.lineNumber,
-      column: e.position.column
-    })
-  })
 })
 
 // ============ 5. 页面 → 编辑器：props 变化时"热更新"编辑器 ============

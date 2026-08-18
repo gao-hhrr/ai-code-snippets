@@ -1,8 +1,14 @@
+// ════════════════════════════════════════════════════════
+// snippetStore：片段 + 收藏夹 + 批量选择 + AI 描述生成 四个域的编排中心。
+// 数据所有权：snippets / folders 在此声明，watch deep 自动落盘 localStorage；
+// 纯逻辑已抽到 services（sort / storage / seed），store 只留「必须碰响应式数据」的编排。
+// ════════════════════════════════════════════════════════
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { Snippet, Folder } from '@/types'
 import { compareSnippets } from '@/services/sort'
 import type { SortBy, SortDir } from '@/services/sort'
+import { isWithinDays } from '@/services/date'
 import { generateDescription } from '@/api/ai'
 import {
   loadSnippets, loadFolders, persistSnippets, persistFolders, migrateData
@@ -13,11 +19,7 @@ import { seedIfFirstUse } from '@/services/seed'
 export type { SortBy, SortDir } from '@/services/sort'
 export type FilterType = 'all' | 'language' | 'favorites' | 'recent'
 
-// ════════════════════════════════════════════════════════
-// snippetStore：片段 + 收藏夹 + 批量选择 + AI 描述生成 四个域的编排中心。
-// 数据所有权：snippets / folders 在此声明，watch deep 自动落盘 localStorage；
-// 纯逻辑已抽到 services（sort / storage / seed），store 只留「必须碰响应式数据」的编排。
-// ════════════════════════════════════════════════════════
+
 export const useSnippetStore = defineStore('snippet', () => {
 
   // ════════════════════════════════════════════════════════
@@ -26,7 +28,6 @@ export const useSnippetStore = defineStore('snippet', () => {
   // --- 数据源：watch deep 自动落盘 localStorage（见「初始化与持久化」）---
   const snippets = ref<Snippet[]>(loadSnippets())
   const folders = ref<Folder[]>(loadFolders())
-  const loading = ref(false)
 
   // --- 筛选 / 排序条件：会话内状态，不持久化 ---
   const searchQuery = ref('')
@@ -78,8 +79,7 @@ export const useSnippetStore = defineStore('snippet', () => {
         result = result.filter(s => s.folderIds.includes(filterValue.value))
         break
       case 'recent':
-        const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
-        result = result.filter(s => new Date(s.createdAt).getTime() > weekAgo)
+        result = result.filter(s => isWithinDays(s.createdAt, 7))
         break
     }
 
@@ -145,24 +145,31 @@ export const useSnippetStore = defineStore('snippet', () => {
   // 保存后异步补全 description，作为 AI 检索的语义依据；描述为空才生成、失败保持空串、UI 提供重试
   const generatingDescriptionIds = ref<string[]>([])
 
+  //判断是否正在生成
   function isGeneratingDescription(id: string) {
     return generatingDescriptionIds.value.includes(id)
   }
 
   async function ensureDescription(id: string) {
     const s = snippets.value.find(x => x.id === id)
+    // 片段不存在 ,已经有description不需要再生成 ,正在生成中，防止重复调用
     if (!s || s.description || isGeneratingDescription(id)) return
+    //标记为「生成中」，加入队列
     generatingDescriptionIds.value.push(id)
     try {
+      //调用AI生成方法，传入标题、代码、语言，去除首尾空格
       const desc = (await generateDescription(s.title, s.code, s.language)).trim()
+      //二次查找最新数据（关键容错）
       const current = snippets.value.find(x => x.id === id)
       // 生成期间片段可能被删除；用户可能在生成完成前手动填了描述
+      //校验：片段还存在 && 目前依旧没有描述 && AI返回了有效内容
       if (current && !current.description && desc) {
         current.description = desc
       }
     } catch {
-      // 生成失败保持空串，不打扰用户
+      //AI接口报错、网络异常，直接吞掉错误，不抛出弹窗影响
     } finally {
+      //无论成功/失败/报错，都移除loading标记
       generatingDescriptionIds.value = generatingDescriptionIds.value.filter(x => x !== id)
     }
   }
@@ -266,7 +273,7 @@ export const useSnippetStore = defineStore('snippet', () => {
 
   // 对外暴露：状态 / 筛选结果 / 片段 / 收藏夹 / 批量 / AI 描述操作方法
   return {
-    snippets, folders, loading, searchQuery, filterType, filterValue, sortBy, sortDir,
+    snippets, folders, searchQuery, filterType, filterValue, sortBy, sortDir,
     filteredSnippets, languageStats, folderStats,
     batchMode, selectedIds,
     setFilter,

@@ -1,5 +1,5 @@
 <!-- ════════════════════════════════════════════════════════
-     EmptyState —— 列表空态：加载骨架 / 无片段 / 筛选无结果（含去新建引导）
+     EmptyState —— 列表空态：无片段 / 筛选无结果（含去新建引导）
      ════════════════════════════════════════════════════════ -->
 <script setup lang="ts">
 import { useSnippetStore } from '@/stores/snippetStore'
@@ -11,21 +11,8 @@ const router = useRouter()
 </script>
 
 <template>
-  <!-- 加载中：骨架卡片，贴合列表卡片形状 -->
-  <div v-if="snippetStore.loading" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-    <div
-      v-for="i in 4"
-      :key="i"
-      class="bg-white rounded-xl p-5 shadow-sm ring-1 ring-zinc-300/70 animate-pulse"
-    >
-      <div class="h-3 w-16 bg-zinc-200 rounded mb-3"></div>
-      <div class="h-4 w-2/3 bg-zinc-200 rounded mb-4"></div>
-      <div class="h-20 bg-zinc-100 rounded-lg"></div>
-    </div>
-  </div>
-
   <!-- 空状态：按情况给不同的引导出口 -->
-  <div v-else-if="snippetStore.filteredSnippets.length === 0" class="text-center py-16">
+  <div v-if="snippetStore.filteredSnippets.length === 0" class="text-center py-16">
     <div
       class="mx-auto mb-4 w-14 h-14 flex items-center justify-center rounded-2xl bg-github-blue-light text-github-blue"
     >
