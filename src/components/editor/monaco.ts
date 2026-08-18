@@ -8,17 +8,36 @@
 //   只需要"语法高亮 + 标准编辑器功能"。
 //   所以这里只引入：核心 API + 语法高亮 + 按需的功能模块，剪掉那 4 个 worker。
 //
-// ⚠️ 本文件由脚本 _gen-monaco-entry.cjs 生成（裁剪自 editor.main.js）。
-//    改这个文件请重新生成或手动同步，否则下次生成会被覆盖。
 // ============================================================
 
 // Monaco 的核心 API（monaco.editor.create、monaco.KeyCode 等都从这里导出）
 export * from 'monaco-editor/editor/editor.api'
 
-// 语法高亮：basic-languages 给所有语言提供"颜色着色规则"（tokenizer）。
-// 有了它，Python/Java/JavaScript 等才能显示彩色高亮。这是"廉价"的语言支持——
-// 只管颜色，不做智能分析。上面说的 4 个 worker 才是"智能"的部分，已剪掉。
-import 'monaco-editor/basic-languages/monaco.contribution'
+// 语法高亮：basic-languages 给每种语言提供"颜色着色规则"（tokenizer）——只管颜色，
+// 不做智能分析（智能部分是上面已剪掉的 4 个 worker）。全量引入 monaco.contribution
+// 会注册约 70 种语言、构建出 70 个小 chunk；本应用实际只用 LANGUAGES 清单里的 19 种，
+// 这里按需 import 对应 register，未列出的语言（Other）回退纯文本。
+// 每种语言的 tokenizer 本身是懒加载的——只在编辑器渲染到该语言时才拉取，平常不占流量。
+// 注意：C 与 JSON 在 basic-languages 里没有定义，本就走纯文本高亮，无需引入。
+import 'monaco-editor/languages/definitions/javascript/register'
+import 'monaco-editor/languages/definitions/typescript/register'
+import 'monaco-editor/languages/definitions/html/register'
+import 'monaco-editor/languages/definitions/css/register'
+import 'monaco-editor/languages/definitions/markdown/register'
+import 'monaco-editor/languages/definitions/python/register'
+import 'monaco-editor/languages/definitions/shell/register'
+import 'monaco-editor/languages/definitions/yaml/register'
+import 'monaco-editor/languages/definitions/sql/register'
+import 'monaco-editor/languages/definitions/java/register'
+import 'monaco-editor/languages/definitions/go/register'
+import 'monaco-editor/languages/definitions/rust/register'
+import 'monaco-editor/languages/definitions/cpp/register'
+import 'monaco-editor/languages/definitions/csharp/register'
+import 'monaco-editor/languages/definitions/php/register'
+import 'monaco-editor/languages/definitions/ruby/register'
+import 'monaco-editor/languages/definitions/swift/register'
+import 'monaco-editor/languages/definitions/kotlin/register'
+import 'monaco-editor/languages/definitions/r/register'
 
 // ============================================================
 // 下面这一长串 import 全是"编辑器功能模块"（contributions）。
