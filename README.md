@@ -51,7 +51,7 @@ src/
 │   ├── snippet-editor/     # 路由 /snippet/new + /snippet/:id/edit
 │   │   └── index.vue           # 新建/编辑页:Monaco + AI 生成抽屉
 │   └── ai-assistant/       # 路由 /ai(KeepAlive 按组件名缓存)
-│       └── index.vue           # AI 助手页:对话式检索 + 库操作提议
+│       └── index.vue           # AI 助手页(编排者):对话流 + 确认操作 + 双重确认,零件在 business/assistant/
 ├── components/             # 两层:global 通用基础 + business 业务组件(判断依据=换项目还能不能用)
 │   ├── global/             # 通用基础组件(业务无关、跨项目可复用),按 UI 类别分子目录
 │   │   ├── base/               # 原子小组件:AppIcon
@@ -62,7 +62,14 @@ src/
 │   │   └── content/            # 内容渲染:MarkdownText(净化防 XSS)
 │   ├── business/           # 业务组件(直接操作片段/收藏夹领域对象),按业务域分
 │   │   ├── snippet/            # 代码片段:SiteNav / SnippetCard / ListToolbar / BatchActionBar / AiGeneratePanel
-│   │   └── folder/             # 收藏夹:FolderPicker / NavFolders / FolderRow
+│   │   ├── folder/             # 收藏夹:FolderPicker / NavFolders / FolderRow
+│   │   └── assistant/          # AI 助手页零件:展示卡 props/emit + 功能块直连 store
+│   │       ├── SnippetResultCard  搜索结果卡(语言色点+标题+AI 描述+代码预览)
+│   │       ├── ModifyCard         AI 改代码卡(diff 二次确认,可另存/替换/导出)
+│   │       ├── OperateCard        AI 库操作提议卡(12 种 op,danger 决定红/蓝配色)
+│   │       ├── ThinkingFold       思考过程折叠面板(四步总结,缺失兜底 reasoning)
+│   │       ├── ChatInputBar       底部输入区(错误/重试/上限/输入/换话题;defineExpose 聚焦)
+│   │       └── WaitingIndicator   等待四步阶段指示(读 store phase/elapsed)
 │   └── editor/             # Monaco 封装(第三方集成):MonacoEditor / MonacoLoading / DiffView / monaco.ts(裁剪入口)
 ├── stores/                 # Pinia
 │   ├── snippetStore.ts         # 片段 + 收藏夹(watch deep 自动持久化)
@@ -92,7 +99,7 @@ src/
 1. **片段列表页(最简单)**:`views/snippet-list/index.vue` → `snippetStore` → `services/storage` + `seed`——理解"store 是唯一数据源 + watch 自动持久化"
 2. **新建/编辑**:`views/snippet-editor/index.vue` → `composables/useDraft`(草稿 + 未保存确认)→ `components/editor`(Monaco 封装 + 异步加载)
 3. **详情页**:`views/snippet-detail/index.vue` → `api/tasks`(AI 生成描述)
-4. **AI 助手(最复杂,最后啃)**:`views/ai-assistant/index.vue` → `aiAssistantStore` → `api/assistant` → `api/client`——它集中了最多的设计决策(两级召回、工具分发、错误体系)
+4. **AI 助手(最复杂,最后啃)**:`views/ai-assistant/index.vue`(编排者)→ `components/business/assistant/`(6 个零件)→ `aiAssistantStore` → `api/assistant` → `api/client`——集中了最多的设计决策(两级召回、工具分发、错误体系);页面管流程,展示卡 props/emit,输入条/等待指示直连 store
 
 **每读一个文件问三问**:① 它 import 了什么 / 导出什么 / 谁在用它?② 数据从哪来、往哪去?③ 我先猜它会怎么写,再验证——答不上就停下查,别硬读。
 

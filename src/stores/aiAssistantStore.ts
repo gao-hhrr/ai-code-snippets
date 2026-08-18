@@ -438,5 +438,5 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     messages.value.push({ role: 'assistant', content: '', note, searchIds: ids })
   }
 
-  return { messages, sending, retrying, reasoning, composing, phase, elapsed, error, lastUserText, reset, stop, send, retry, switchTopic, runModify, saveModifyAsNew, replaceModify, exportModify, seedContext, runOperate, confirmOperate, cancelOperate }
+  return { messages, sending, retrying, reasoning, composing, phase, elapsed, error, lastUserText, MAX_TURNS, reset, stop, send, retry, switchTopic, runModify, saveModifyAsNew, replaceModify, exportModify, seedContext, runOperate, confirmOperate, cancelOperate }
 })
