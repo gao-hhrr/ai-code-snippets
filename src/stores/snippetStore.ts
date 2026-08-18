@@ -5,35 +5,59 @@ import { compareSnippets } from '@/services/sort'
 import type { SortBy, SortDir } from '@/services/sort'
 import { generateDescription } from '@/api/ai'
 import {
-  loadSnippets, loadFolders, persistSnippets, persistFolders, seedIfFirstUse, migrateData
+  loadSnippets, loadFolders, persistSnippets, persistFolders, migrateData
 } from '@/services/storage'
+import { seedIfFirstUse } from '@/services/seed'
 
 // 排序类型定义在 services/sort.ts，这里 re-export 保持既有引用（SortMenu）不变
 export type { SortBy, SortDir } from '@/services/sort'
 export type FilterType = 'all' | 'language' | 'favorites' | 'recent'
 
+// ════════════════════════════════════════════════════════
+// snippetStore：片段 + 收藏夹 + 批量选择 + AI 描述生成 四个域的编排中心。
+// 数据所有权：snippets / folders 在此声明，watch deep 自动落盘 localStorage；
+// 纯逻辑已抽到 services（sort / storage / seed），store 只留「必须碰响应式数据」的编排。
+// ════════════════════════════════════════════════════════
 export const useSnippetStore = defineStore('snippet', () => {
+
+  // ════════════════════════════════════════════════════════
+  //  状态
+  // ════════════════════════════════════════════════════════
+  // --- 数据源：watch deep 自动落盘 localStorage（见「初始化与持久化」）---
   const snippets = ref<Snippet[]>(loadSnippets())
   const folders = ref<Folder[]>(loadFolders())
   const loading = ref(false)
+
+  // --- 筛选 / 排序条件：会话内状态，不持久化 ---
   const searchQuery = ref('')
   const filterType = ref<FilterType>('all')
-  const filterValue = ref('')
+  const filterValue = ref('')//对应筛选条件的值
   // 排序不持久化：每次进入页面默认「最近更新 ↓」，会话内切换即时生效
   const sortBy = ref<SortBy>('updated')
   const sortDir = ref<SortDir>('desc')
-  // 没有显式"批量模式"：有选中片段即视为批量态（底部操作条随之出现）
-  const batchMode = computed(() => selectedIds.value.length > 0)
-  const selectedIds = ref<string[]>([])
 
+  // --- 批量选择状态 ---
+  // 没有显式"批量模式"：有选中片段即视为批量态（底部操作条随之出现）
+  const selectedIds = ref<string[]>([])
+  const batchMode = computed(() => selectedIds.value.length > 0)
+
+
+  // ════════════════════════════════════════════════════════
+  //  初始化与持久化
+  // ════════════════════════════════════════════════════════
   // 首次使用写入示例数据（只写一次，之后以用户数据为准）
   seedIfFirstUse(snippets.value)
   // 一次性迁移：旧的 isFavorited 收藏 → 「默认收藏夹」，并规范化 folderIds
   migrateData(snippets.value, folders.value)
 
+  // 数据变化自动落盘（localStorage）
   watch(snippets, persistSnippets, { deep: true })
   watch(folders, persistFolders, { deep: true })
 
+
+  // ════════════════════════════════════════════════════════
+  //  筛选 / 排序 / 统计
+  // ════════════════════════════════════════════════════════
   function setFilter(type: FilterType, value = '') {
     // 切换筛选即清空选择，避免跨视图残留批量操作栏
     selectedIds.value = []
@@ -42,6 +66,7 @@ export const useSnippetStore = defineStore('snippet', () => {
     searchQuery.value = ''
   }
 
+  // --- 核心列表：筛选 → 搜索 → 排序（拷贝后原地 sort，不改 snippets 原数组）---
   const filteredSnippets = computed(() => {
     let result = snippets.value
 
@@ -63,12 +88,13 @@ export const useSnippetStore = defineStore('snippet', () => {
       result = result.filter(s => s.title.toLowerCase().includes(q))
     }
 
-    // 排序（拷贝后原地 sort，避免误改 snippets 原数组）；比较逻辑见 services/sort.ts
+    // sort 返回负值 a 在 b 前，正值 a 在 b 后；比较逻辑见 services/sort.ts
     result = [...result].sort((a, b) => compareSnippets(a, b, sortBy.value, sortDir.value))
 
     return result
   })
 
+  // --- 语言统计：导航「按语言」筛选项的数据来源 ---
   const languageStats = computed(() => {
     const map = new Map<string, number>()
     snippets.value.forEach(s => {
@@ -79,6 +105,7 @@ export const useSnippetStore = defineStore('snippet', () => {
       .sort((a, b) => b.count - a.count)
   })
 
+  // --- 收藏夹统计：导航侧栏每个夹的片段数 ---
   const folderStats = computed(() =>
     folders.value.map(f => ({
       id: f.id,
@@ -87,6 +114,10 @@ export const useSnippetStore = defineStore('snippet', () => {
     }))
   )
 
+
+  // ════════════════════════════════════════════════════════
+  //  片段 CRUD
+  // ════════════════════════════════════════════════════════
   function addSnippet(snippet: Snippet) {
     snippets.value.unshift(snippet)
   }
@@ -107,8 +138,11 @@ export const useSnippetStore = defineStore('snippet', () => {
     snippets.value = []
   }
 
-  // --- AI 自动生成描述（保存后异步调用，不阻塞跳转）---
-  // 描述为空才生成；已在生成中的不重复触发；失败保持空串，UI 提供重试
+
+  // ════════════════════════════════════════════════════════
+  //  AI 自动生成描述
+  // ════════════════════════════════════════════════════════
+  // 保存后异步补全 description，作为 AI 检索的语义依据；描述为空才生成、失败保持空串、UI 提供重试
   const generatingDescriptionIds = ref<string[]>([])
 
   function isGeneratingDescription(id: string) {
@@ -133,7 +167,10 @@ export const useSnippetStore = defineStore('snippet', () => {
     }
   }
 
-  // --- 收藏夹 ---
+
+  // ════════════════════════════════════════════════════════
+  //  收藏夹 CRUD 与收藏关系
+  // ════════════════════════════════════════════════════════
   // 收藏夹名重名拦截：新建/重命名共用；excludeId 用于重命名时排除自身
   function isFolderNameTaken(name: string, excludeId?: string): boolean {
     const trimmed = name.trim()
@@ -173,6 +210,7 @@ export const useSnippetStore = defineStore('snippet', () => {
     })
   }
 
+  // --- 收藏关系：folderIds 长在 snippet 上，收藏/移出实质都在改 snippets，故归属本 store ---
   function favoriteTo(snippetId: string, folderId: string) {
     const s = snippets.value.find(x => x.id === snippetId)
     if (s && !s.folderIds.includes(folderId)) s.folderIds.push(folderId)
@@ -183,11 +221,14 @@ export const useSnippetStore = defineStore('snippet', () => {
     if (s) s.folderIds = s.folderIds.filter(id => id !== folderId)
   }
 
-  // --- 批量选择 ---
+
+  // ════════════════════════════════════════════════════════
+  //  批量选择与批量操作
+  // ════════════════════════════════════════════════════════
   function toggleSelect(id: string) {
     selectedIds.value = selectedIds.value.includes(id)
       ? selectedIds.value.filter(x => x !== id)
-      : [...selectedIds.value, id]
+      : [...selectedIds.value, id]//展开数组追加id
   }
 
   function selectAll(ids: string[]) {
@@ -223,6 +264,7 @@ export const useSnippetStore = defineStore('snippet', () => {
     clearSelection()
   }
 
+  // 对外暴露：状态 / 筛选结果 / 片段 / 收藏夹 / 批量 / AI 描述操作方法
   return {
     snippets, folders, loading, searchQuery, filterType, filterValue, sortBy, sortDir,
     filteredSnippets, languageStats, folderStats,

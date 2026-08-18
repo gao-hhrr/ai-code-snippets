@@ -1,4 +1,8 @@
-// 与 AI 交互的共享类型：请求消息、代码上下文、库片段、助手消息、操作动作
+// ════════════════════════════════════════════════════════
+// api/types.ts —— AI 交互共享类型：ChatMessage / CodeContext / 库片段子集 / 助手消息 / 操作动作
+// ════════════════════════════════════════════════════════
+import type { Snippet, Folder } from '@/types'
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
@@ -9,20 +13,11 @@ export interface CodeContext {
   language: string
 }
 
-export interface SearchSnippet {
-  id: string
-  title: string
-  language: string
-  code: string
-  description: string
-  folderIds: string[]
-  createdAt: string
-}
+// 进 prompt 的库片段子集：从领域模型 Snippet 派生（少 updatedAt，其余字段一致）
+export type SearchSnippet = Pick<Snippet, 'id' | 'title' | 'language' | 'code' | 'description' | 'folderIds' | 'createdAt'>
 
-export interface SearchFolder {
-  id: string
-  name: string
-}
+// 进 prompt 的收藏夹子集：从领域模型 Folder 派生
+export type SearchFolder = Pick<Folder, 'id' | 'name'>
 
 export interface AssistantTurnMessage {
   role: 'user' | 'assistant'

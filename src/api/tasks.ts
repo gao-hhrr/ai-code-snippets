@@ -1,4 +1,6 @@
-// 单项 AI 任务：围绕单段代码的对话、描述生成、按描述生成代码、按需求修改代码
+// ════════════════════════════════════════════════════════
+// api/tasks.ts —— 单项 AI 任务：chatAboutCode / generateDescription / generateCode / modifyCode
+// ════════════════════════════════════════════════════════
 import { chat } from './client'
 import type { ChatMessage, CodeContext } from './types'
 
@@ -19,12 +21,13 @@ export async function chatAboutCode(
   context: CodeContext,
   opts: { signal?: AbortSignal; onChunk?: (delta: string) => void } = {}
 ): Promise<string> {
-  return chat({
+  const res = await chat({
     messages: [{ role: 'system', content: buildCodeSystemPrompt(context) }, ...history],
     maxTokens: 2000,
     signal: opts.signal,
     onChunk: opts.onChunk
   })
+  return res.content
 }
 
 // 为片段生成一句"人话"描述：代码表达不了的用途/背景，AI 助手理解片段的元信息。
@@ -48,11 +51,12 @@ export async function generateDescription(
     code.slice(0, 8000),
     '```'
   ].join('\n')
-  return chat({
+  const res = await chat({
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 300,
     signal: opts.signal
   })
+  return res.content
 }
 
 // 按描述生成一段新代码（传入 onChunk 即流式）
@@ -67,12 +71,13 @@ export async function generateCode(
     `语言：${language}`,
     `需求：${description}`
   ].join('\n')
-  return chat({
+  const res = await chat({
     messages: [{ role: 'user', content: prompt }],
     maxTokens: 4096,
     signal: opts.signal,
     onChunk: opts.onChunk
   })
+  return res.content
 }
 
 // 按需求修改既有代码（传入 onChunk 即流式）
@@ -88,10 +93,11 @@ export async function modifyCode(
     '```',
     `用户需求：${requirement}`
   ].join('\n')
-  return chat({
+  const res = await chat({
     messages: [{ role: 'user', content: prompt }],
     maxTokens: Math.max(code.length * 2, 2000),
     signal: opts.signal,
     onChunk: opts.onChunk
   })
+  return res.content
 }

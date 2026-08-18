@@ -1,9 +1,12 @@
+// ════════════════════════════════════════════════════════
+// stores/aiAssistantStore.ts —— AI 助手状态中心：对话流式累积 / 四步阶段指示 / 6 工具库操作确认与执行
+// ════════════════════════════════════════════════════════
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { assistantTurn, modifyCode, generateCode, summarizeThinking, AIError, isAbortError } from '@/api/ai'
 import type { AssistantTurnMessage, AssistantReply, OperateOp } from '@/api/ai'
-import { downloadText, langToExt } from '@/services/download'
+import { downloadText, langToExt } from '@/services/file'
 import { loadAIConversation, persistAIConversation } from '@/services/storage'
 
 export const useAiAssistantStore = defineStore('aiAssistant', () => {

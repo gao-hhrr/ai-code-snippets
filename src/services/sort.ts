@@ -1,3 +1,6 @@
+// ════════════════════════════════════════════════════════
+// services/sort.ts —— 片段排序比较 compareSnippets：按更新时间/创建时间/标题（中文转拼音混排），asc/desc
+// ════════════════════════════════════════════════════════
 import { pinyin } from 'pinyin-pro'
 import type { Snippet } from '@/types'
 
