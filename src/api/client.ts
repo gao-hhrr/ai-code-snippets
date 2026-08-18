@@ -41,7 +41,7 @@ export function isAbortError(err: unknown): boolean {
 // 之前直接透传英文原文（如 400 context length），用户无法区分问题类型。
 export function describeAIError(status: number, detail: string): { code: AIErrorCode; message: string } {
   const d = detail.toLowerCase()
-  if (status === 401) return { code: 'ERR_UNAUTHORIZED', message: 'AI API Key 无效或已过期，请检查 .env 中的 VITE_AI_API_KEY' }
+  if (status === 401) return { code: 'ERR_UNAUTHORIZED', message: 'AI API Key 无效或已过期，请检查 Key 配置' }
   if (status === 402 || /balance|insufficient|quota|inactive/.test(d)) return { code: 'ERR_INSUFFICIENT', message: 'AI 账户余额不足或额度用尽，请到平台充值或检查用量' }
   if (status === 429) return { code: 'ERR_RATE_LIMIT', message: 'AI 请求过于频繁，请稍等片刻再试' }
   if (status === 400 && /context|length/.test(d)) return { code: 'ERR_CONTEXT', message: '请求内容过长，超出模型上下文上限：候选片段太多或对话历史太长。建议点「重新开始」缩短对话，或删除部分片段' }
@@ -49,6 +49,7 @@ export function describeAIError(status: number, detail: string): { code: AIError
   return { code: 'ERR_API', message: `AI 请求失败（${status}）：${detail}` }
 }
 
+// 本地开发直连 DeepSeek（key 取自本地 .env 的 VITE_AI_API_KEY，仅限本地使用）
 const AI_API_URL = 'https://api.deepseek.com/chat/completions'
 const AI_API_KEY = import.meta.env.VITE_AI_API_KEY || ''
 const AI_MODEL = import.meta.env.VITE_AI_MODEL || 'deepseek-v4-flash'
