@@ -1,8 +1,8 @@
 <!-- ════════════════════════════════════════════════════════
-     views/snippet-editor/index.vue —— 新建/编辑页：Monaco 编辑 + 草稿恢复 + AI 生成/修改确认
+     views/snippet-editor/index.vue —— 新建/编辑页：Monaco 编辑 + 草稿恢复
      ════════════════════════════════════════════════════════ -->
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { useAiAssistantStore } from '@/stores/aiAssistantStore'
@@ -15,7 +15,6 @@ import PageHeader from '@/components/global/layout/PageHeader.vue'
 import LanguageSelect from '@/components/global/form/LanguageSelect.vue'
 import ConfirmDialog from '@/components/global/feedback/ConfirmDialog.vue'
 import FontSizeControl from '@/components/global/form/FontSizeControl.vue'
-import AiGeneratePanel from '@/components/business/snippet/AiGeneratePanel.vue'
 
 const { MonacoEditor } = useMonacoAsync()
 
@@ -39,35 +38,6 @@ const description = ref(existing.value?.description || '')
 const saving = ref(false)
 const fileInput = ref<HTMLInputElement>()
 const uploading = ref(false)
-const showGenerate = ref(false)
-const titleInputEl = ref<HTMLInputElement | null>(null)
-
-// AI 生成结果确认：代码已流式填入编辑器，关闭面板；标题留空时引导用户命名
-// （标题是搜索入口，由用户主动命名最稳，不做 AI 生成标题）
-function handleAiApply() {
-  showGenerate.value = false
-  if (!title.value.trim()) {
-    nextTick(() => titleInputEl.value?.focus())
-  }
-}
-
-// AI 生成预览：生成前暂存编辑器内容（供「放弃」恢复），生成结果流式填入编辑器
-// 为什么生成前就要暂存？
-// 因为生成结果是流式直接写进编辑器的——它已经在"污染"编辑器里的内容了。
-// 暂存原文，是给「放弃」留的后路：用户对结果不满意，一键恢复到生成前。
-const preAiCode = ref('')
-//暂存编辑器内容
-function handleAiGenerating() {
-  preAiCode.value = code.value
-}
-//填进编辑器
-function handleAiStream(text: string) {
-  code.value = text
-}
-//恢复暂存
-function handleAiDiscard() {
-  code.value = preAiCode.value
-}
 
 // 代码字号（每次进入默认，不持久化）
 const fontSize = ref(20)
@@ -183,7 +153,6 @@ function handleSave() {
       <div class="mx-auto flex max-w-7xl items-center gap-3">
         <span class="shrink-0 text-sm text-zinc-500">名称</span>
         <input
-          ref="titleInputEl"
           v-model="title"
           type="text"
           placeholder="未命名片段"
@@ -204,7 +173,7 @@ function handleSave() {
       </div>
     </div>
 
-    <!-- 编辑器主区 + AI 生成抽屉：编辑器 + 抽屉整体限宽居中（宽屏左右留白，代码行不过长），面板打开时从右侧推开 -->
+    <!-- 编辑器主区：整体限宽居中（宽屏左右留白，代码行不过长） -->
     <div class="relative min-h-0 flex-1 bg-zinc-100 px-4 py-3 sm:px-6 sm:py-4">
       <div class="mx-auto flex h-full max-w-7xl gap-3">
         <div class="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl ring-1 ring-zinc-300/70 bg-white shadow-sm">
@@ -220,20 +189,6 @@ function handleSave() {
             <FontSizeControl v-model:size="fontSize" />
           </div>
         </div>
-
-        <!-- AI 生成抽屉：与编辑器同高、可收起，真实占位不遮挡 -->
-        <Transition name="fade">
-          <AiGeneratePanel
-            v-if="showGenerate"
-            class="w-[360px] max-w-[45vw] shrink-0"
-            v-model:language="language"
-            @close="showGenerate = false"
-            @generating="handleAiGenerating"
-            @stream="handleAiStream"
-            @apply="handleAiApply"
-            @discard="handleAiDiscard"
-          />
-        </Transition>
       </div>
     </div>
 
@@ -247,12 +202,6 @@ function handleSave() {
         </span>
 
         <div class="flex items-center gap-2">
-          <button
-            class="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-zinc-800 bg-zinc-200 rounded-lg hover:bg-zinc-300 transition-colors cursor-pointer shrink-0"
-            :class="showGenerate ? 'bg-zinc-300' : ''"
-            title="AI 生成代码"
-            @click="showGenerate = !showGenerate"
-          >AI 生成</button>
           <button
             class="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-zinc-800 bg-zinc-200 rounded-lg hover:bg-zinc-300 transition-colors cursor-pointer disabled:opacity-50"
             :disabled="uploading"

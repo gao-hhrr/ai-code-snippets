@@ -47,7 +47,7 @@ export const useSnippetStore = defineStore('snippet', () => {
   //  初始化与持久化
   // ════════════════════════════════════════════════════════
   // 首次使用写入示例数据（只写一次，之后以用户数据为准）
-  seedIfFirstUse(snippets.value)
+  seedIfFirstUse(snippets.value, folders.value)
   // 一次性迁移：旧的 isFavorited 收藏 → 「默认收藏夹」，并规范化 folderIds
   migrateData(snippets.value, folders.value)
 
