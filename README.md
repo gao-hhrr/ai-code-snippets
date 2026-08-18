@@ -14,9 +14,17 @@
 | 状态 | Pinia |
 | 路由 | Vue Router 4 |
 | 样式 | TailwindCSS 4(zinc 骨架 + GitHub 蓝 `#0969DA`) |
-| 编辑器 | Monaco Editor(**裁剪入口**:去掉 4 个语言服务 worker,dist 5.8MB) |
+| 编辑器 | Monaco Editor(**裁剪入口**:去掉 4 个语言服务 worker + 语言裁剪 72→19,dist 5.8MB) |
 | AI | DeepSeek(OpenAI 兼容 API,SSE 流式) |
 | 存储 | localStorage(数据:片段/收藏夹)+ sessionStorage(临时状态:草稿/AI 对话/滚动位置) |
+
+## 性能优化
+
+- **首屏轻量化**:路由懒加载 + Monaco 按需加载。首屏只加载核心壳(约 123KB JS),各页面代码按路由懒加载;Monaco(约 4MB)只在进入编辑器时加载,浏览/收藏片段不背这个体积
+- **Monaco 语言裁剪(72 → 19)**:只注册实际用到的 19 种语言,未列出语言回退纯文本;tokenizer 按语言懒加载,进编辑器时只拉用到的语言
+- **Monaco 空闲预加载 + 弱网保护**:浏览器空闲时后台预热 Monaco,首次进编辑器即可秒开;弱网(2G/3G/低带宽/省流量模式)下跳过预加载——4MB 预加载会与首屏交互抢带宽,弱网里"空闲"是假空闲,改由真正进编辑器时按需加载
+- **白屏期加载占位**:`index.html` 静态占位 + `App.vue` 路由就绪门,白屏全程显示 loading,避免一片空白
+- **取舍**:有 Monaco 4MB 这类重型依赖,必须懒加载——若首屏一次加载全部,弱网下白屏 10s+,不可接受;全量加载只适合无超重资源的内容型网站
 
 ## 快速开始
 
@@ -41,7 +49,7 @@ npm run preview  # 预览构建产物
 
 ```
 src/
-├── main.ts                 # 入口:注册 Pinia/router、浏览器空闲预热 Monaco
+├── main.ts                 # 入口:注册 Pinia/router、浏览器空闲预热 Monaco(弱网跳过)
 ├── router/index.ts         # 路由表(4 个页面)
 ├── views/                  # 只放页面组件(index.vue),纯组装;零件全在 components/
 │   ├── snippet-list/       # 路由 / —— 片段列表页 = 网站主界面(顶栏 + 站点导航 + 片段列表)
@@ -49,7 +57,7 @@ src/
 │   ├── snippet-detail/     # 路由 /snippet/:id
 │   │   └── index.vue           # 详情页:阅读 + 复制/导出/AI 入口
 │   ├── snippet-editor/     # 路由 /snippet/new + /snippet/:id/edit
-│   │   └── index.vue           # 新建/编辑页:Monaco + AI 生成抽屉
+│   │   └── index.vue           # 新建/编辑页:Monaco 编辑 + 草稿恢复
 │   └── ai-assistant/       # 路由 /ai(KeepAlive 按组件名缓存)
 │       └── index.vue           # AI 助手页(编排者):对话流 + 确认操作 + 双重确认,零件在 business/assistant/
 ├── components/             # 两层:global 通用基础 + business 业务组件(判断依据=换项目还能不能用)
@@ -61,7 +69,7 @@ src/
 │   │   ├── layout/             # 纯框架:PageHeader(页面顶栏) / BrandMark(列表页顶栏已内联进 snippet-list/index.vue)
 │   │   └── content/            # 内容渲染:MarkdownText(净化防 XSS)
 │   ├── business/           # 业务组件(直接操作片段/收藏夹领域对象),按业务域分
-│   │   ├── snippet/            # 代码片段:SiteNav / SnippetCard / ListToolbar / BatchActionBar / AiGeneratePanel
+│   │   ├── snippet/            # 代码片段:SiteNav / SnippetCard / ListToolbar / BatchActionBar
 │   │   ├── folder/             # 收藏夹:FolderPicker / NavFolders / FolderRow
 │   │   └── assistant/          # AI 助手页零件:展示卡 props/emit + 功能块直连 store
 │   │       ├── SnippetResultCard  搜索结果卡(语言色点+标题+AI 描述+代码预览)

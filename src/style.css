@@ -85,3 +85,32 @@
 .fade-leave-to {
   opacity: 0;
 }
+
+/* 首屏/路由就绪加载占位：App.vue ready 门用这套 class；
+   index.html 的静态占位是内联样式（CSS 未加载前就要显示），色值与这里一致 */
+.app-loading {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--color-zinc-100);
+}
+.app-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid var(--color-zinc-300);
+  border-top-color: var(--color-github-blue);
+  animation: app-loading-spin 0.8s linear infinite;
+}
+.app-loading-text {
+  color: var(--color-zinc-400);
+  font-size: 14px;
+}
+@keyframes app-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -16,9 +16,44 @@
     />
     <meta property="og:type" content="website" />
     <title>Code Snippets · 轻量 AI 代码片段管理</title>
+    <!-- 首屏占位样式：内联在此，因为 JS/CSS 加载完成前就要能显示"正在加载"（色值与 style.css 的 .app-loading 一致） -->
+    <style>
+      .app-loading {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        background: #f4f4f5;
+      }
+      .app-loading-spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid #d4d4d8;
+        border-top-color: #0969da;
+        animation: app-loading-spin 0.8s linear infinite;
+      }
+      .app-loading-text {
+        color: #a1a1aa;
+        font-size: 14px;
+      }
+      @keyframes app-loading-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- 首屏占位：Vue 挂载后此内容被替换；弱网下先给"正在加载"反馈，避免一片白屏 -->
+      <div class="app-loading">
+        <span class="app-loading-spinner"></span>
+        <span class="app-loading-text">加载中…</span>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

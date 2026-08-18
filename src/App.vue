@@ -16,7 +16,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-if="!ready" class="h-screen bg-zinc-100"></div>
+  <!-- 路由就绪前显示加载占位（与 index.html 首屏占位同款），而非一片灰，白屏期全程有反馈 -->
+  <div v-if="!ready" class="app-loading">
+    <span class="app-loading-spinner"></span>
+    <span class="app-loading-text">加载中…</span>
+  </div>
   <!-- h-screen 提供高度上下文：详情/编辑页用 h-full 自持整页高度 -->
   <div v-else class="h-screen">
     <!-- 仅缓存 AI 助手页：离开（进详情等）再回来时保留对话 DOM 与滚动位置，不重置回顶部。

@@ -27,12 +27,27 @@ app.use(router)
 app.mount('#app')
 
 // Monaco 体积大（~4MB）异步加载；应用空闲时后台预热模块缓存，
-// 首次进详情/编辑页编辑器即可秒开（同一模块后续 import 直接命中缓存）
-if ('requestIdleCallback' in window) {
-  //浏览器空闲时执行的回调函数
-  window.requestIdleCallback(() => {
-    import('@/components/editor/MonacoEditor.vue')
-  }, { timeout: 3000 })
-} else {
-  setTimeout(() => import('@/components/editor/MonacoEditor.vue'), 2000)
+// 首次进详情/编辑页编辑器即可秒开（同一模块后续 import 直接命中缓存）。
+// 弱网不预热：4MB 预加载会与首屏交互抢带宽，弱网里"浏览器空闲"其实是假空闲，
+// 改由真正进编辑器时再按需加载（与不预热行为一致）。
+// 弱网判定覆盖三层：省流量模式 / 网络类型 2G·3G / 实测带宽很低
+// （downlink 能抓到标称 4G 但实际很慢的情况，如 DevTools 的 Slow 4G 只有 0.4Mbps）。
+type ConnectionInfo = { saveData?: boolean; effectiveType?: string; downlink?: number }
+const connection = (navigator as Navigator & { connection?: ConnectionInfo }).connection
+const isSlowNetwork =
+  !!connection &&
+  (connection.saveData === true ||
+    connection.effectiveType === 'slow-2g' ||
+    connection.effectiveType === '2g' ||
+    connection.effectiveType === '3g' ||
+    (typeof connection.downlink === 'number' && connection.downlink < 1.5))
+if (!isSlowNetwork) {
+  if ('requestIdleCallback' in window) {
+    //浏览器空闲时执行的回调函数
+    window.requestIdleCallback(() => {
+      import('@/components/editor/MonacoEditor.vue')
+    }, { timeout: 3000 })
+  } else {
+    setTimeout(() => import('@/components/editor/MonacoEditor.vue'), 2000)
+  }
 }
