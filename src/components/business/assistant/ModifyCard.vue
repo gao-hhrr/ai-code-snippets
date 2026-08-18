@@ -31,10 +31,14 @@ const emit = defineEmits<{ saveAsNew: []; replace: []; export: [] }>()
       </span>
     </div>
     <div class="p-4">
-      <!-- 改写中 -->
-      <div v-if="props.msg.modifyState === 'running'" class="flex items-center gap-2 text-sm text-zinc-500">
-        <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-github-blue border-t-transparent animate-spin"></span>
-        正在根据需求生成修改后的代码…
+      <!-- 改写中：流式进度实时显示；代码较长/推理较慢时最长约 90 秒 -->
+      <div v-if="props.msg.modifyState === 'running'" class="flex flex-col gap-1.5 text-sm text-zinc-500">
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-github-blue border-t-transparent animate-spin"></span>
+          <span>正在根据需求生成修改后的代码…</span>
+          <span v-if="props.msg.modifyProgress" class="text-zinc-400">（已生成 {{ props.msg.modifyProgress }} 字）</span>
+        </div>
+        <p class="text-xs text-zinc-400">代码较长或 AI 推理较慢时最长约 90 秒，请稍候</p>
       </div>
       <!-- 失败 -->
       <p v-else-if="props.msg.modifyState === 'error'" class="text-sm text-red-500">{{ props.msg.content }}</p>

@@ -34,6 +34,7 @@ export interface AssistantTurnMessage {
   // --- modify 状态（仅 UI/流程，不进 prompt）---
   requirement?: string   // 修改需求（模型提炼）
   modifyState?: 'running' | 'done' | 'error'  // 改写流程状态
+  modifyProgress?: number // 流式改写中已生成的字符数（修改卡显示进度）
   modifiedCode?: string  // AI 改写的完整代码（完成时填充）
   modifyApplied?: boolean // 已保存为新/已替换原
   // --- operate 状态（库结构操作提议：删除/重命名/收藏/导出/新建/清空，确认后才执行）---
@@ -45,6 +46,7 @@ export interface AssistantTurnMessage {
   targetTitle?: string  // 操作对象的片段标题（提议时快照，删除后仍能显示）
   createdCode?: string   // create 本地生成的新代码（生成完成后填充）
   createdLanguage?: string // create 的代码语言
+  createdProgress?: number // create 流式生成中已生成的字符数（确认卡显示进度）
 }
 
 // 库结构操作类型：AI 只提议（operate 动作），用户确认后前端才执行。

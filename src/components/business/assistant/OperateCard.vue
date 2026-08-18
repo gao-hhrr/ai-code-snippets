@@ -96,10 +96,14 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>()
       >{{ operateTitle(props.msg) }}</span>
     </div>
     <div class="p-4">
-      <!-- create 生成代码中 -->
-      <div v-if="props.msg.operateState === 'running'" class="flex items-center gap-2 text-sm text-zinc-500">
-        <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-github-blue border-t-transparent animate-spin"></span>
-        正在根据需求生成代码…
+      <!-- create 生成代码中：流式进度实时显示，代码较长/推理较慢时最长约 90 秒 -->
+      <div v-if="props.msg.operateState === 'running'" class="flex flex-col gap-1.5 text-sm text-zinc-500">
+        <div class="flex items-center gap-2">
+          <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-github-blue border-t-transparent animate-spin"></span>
+          <span>正在根据需求生成代码…</span>
+          <span v-if="props.msg.createdProgress" class="text-zinc-400">（已生成 {{ props.msg.createdProgress }} 字）</span>
+        </div>
+        <p class="text-xs text-zinc-400">代码较长或 AI 推理较慢时最长约 90 秒，请稍候</p>
       </div>
       <template v-else-if="props.msg.operateState === 'pending'">
         <p class="text-sm text-zinc-600 mb-3">{{ props.msg.note || '以下操作将改动你的代码库，请确认后再执行。' }}</p>

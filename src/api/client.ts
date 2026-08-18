@@ -211,41 +211,51 @@ async function readStream(
   let full = ''
   // 流式累积的 tool_calls：按 index 槽位存放，name 整段到达、arguments 分片拼接
   const streamed: Array<{ name: string; arguments: string }> = []
+  // SSE 事件可能被网络切成跨多个 chunk 的半行：buffer 缓存未完成行，等下一 chunk 拼完整再解析。
+  // 之前按 chunk.split('\n') 直接切，跨 chunk 的行会被整体丢掉——长输出（生成代码）内容大量丢失，
+  // 短输出（搜索工具 JSON）单 chunk 装下碰不到，所以"搜索正常、生成代码空"。
+  let buffer = ''
+
+  const handleLine = (line: string) => {
+    if (!line.startsWith('data: ')) return
+    const payload = line.slice(6).trim()
+    if (payload === '[DONE]') return
+    try {
+      const parsed = JSON.parse(payload)
+      const delta = parsed.choices?.[0]?.delta
+      // 推理模型思考过程与最终回答分两个字段流式返回：reasoning_content 在 content 之前吐完
+      if (delta?.reasoning_content) onReasoning?.(delta.reasoning_content)
+      if (delta?.content) {
+        full += delta.content
+        onChunk?.(delta.content)
+      }
+      // 工具调用的增量流：每个 delta.tool_calls 元素带 index；name 一般整段到达、arguments 分片拼
+      if (delta?.tool_calls) {
+        // 触发"开始输出"信号（调用方用它切换阶段指示；工具模式下 content 可能为空）
+        onChunk?.('')
+        for (const tc of delta.tool_calls as Array<{ index?: number; function?: { name?: string; arguments?: string } }>) {
+          const idx = tc.index ?? 0
+          streamed[idx] = streamed[idx] || { name: '', arguments: '' }
+          if (tc.function?.name) streamed[idx].name += tc.function.name
+          if (tc.function?.arguments) streamed[idx].arguments += tc.function.arguments
+        }
+      }
+    } catch { /* 忽略损坏分片（跨 chunk 的半行已被 buffer 拼好，到不了这） */ }
+  }
 
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-
-      const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n').filter(l => l.startsWith('data: '))
-
-      for (const line of lines) {
-        const payload = line.slice(6).trim()
-        if (payload === '[DONE]') continue
-        try {
-          const parsed = JSON.parse(payload)
-          const delta = parsed.choices?.[0]?.delta
-          // 推理模型思考过程与最终回答分两个字段流式返回：reasoning_content 在 content 之前吐完
-          if (delta?.reasoning_content) onReasoning?.(delta.reasoning_content)
-          if (delta?.content) {
-            full += delta.content
-            onChunk?.(delta.content)
-          }
-          // 工具调用的增量流：每个 delta.tool_calls 元素带 index；name 一般整段到达、arguments 分片拼
-          if (delta?.tool_calls) {
-            // 触发"开始输出"信号（调用方用它切换阶段指示；工具模式下 content 可能为空）
-            onChunk?.('')
-            for (const tc of delta.tool_calls as Array<{ index?: number; function?: { name?: string; arguments?: string } }>) {
-              const idx = tc.index ?? 0
-              streamed[idx] = streamed[idx] || { name: '', arguments: '' }
-              if (tc.function?.name) streamed[idx].name += tc.function.name
-              if (tc.function?.arguments) streamed[idx].arguments += tc.function.arguments
-            }
-          }
-        } catch { /* 忽略不完整分片 */ }
+      buffer += decoder.decode(value, { stream: true })
+      let nl: number
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        handleLine(buffer.slice(0, nl))
+        buffer = buffer.slice(nl + 1)
       }
     }
+    // 收尾：末尾可能有不带换行的最后一行
+    if (buffer.trim()) handleLine(buffer)
   } catch (err) {
     if (isAbortError(err)) throw err
     throw new AIError('流式输出中断，请重试', 'ERR_STREAM')

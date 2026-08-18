@@ -65,12 +65,12 @@ const ASSISTANT_TOOLS: ChatTool[] = [
     type: 'function',
     function: {
       name: 'modify',
-      description: '用户想修改已有片段的代码（"把第一个改成 xx""优化一下这段代码"）。ids 是要改的编号，requirement 是提炼后的干净需求。只能提议，绝不直接改。',
+      description: '用户明确说了要修改已有片段的代码，且说清了改哪个 + 具体怎么改（"把第一个改成支持 options 参数"）。若没说改哪个片段、或只说"帮我改下/优化一下"这类空泛需求没说清改成什么样 → 不要调用本工具，改用 ask 澄清。只能提议，绝不直接改。',
       parameters: {
         type: 'object',
         properties: {
           ids: { type: 'array', items: { type: 'integer' }, description: '要修改的片段编号，通常 1 个' },
-          requirement: { type: 'string', description: '提炼后的修改需求，干净、具体、可执行，去掉「帮我」「第一个」这类对话词' },
+          requirement: { type: 'string', description: '提炼后的修改需求，必须包含具体改法（改成什么样/加什么能力/怎么调整），去掉「帮我」「第一个」这类对话词；空泛的"优化/改进"不算有效需求' },
           note: { type: 'string', description: '可选：一句提醒用户确认改动的说明' }
         },
         required: ['ids', 'requirement']
@@ -184,7 +184,8 @@ function logAiCall(entry: Omit<AiCallLog, 't' | 'ms'> & { ms: number }) {
     list.push({ t: new Date().toISOString(), ...entry })
     const last = list.slice(-100)
     localStorage.setItem(key, JSON.stringify(last))
-    console.info('[ai-call]', last[last.length - 1])
+    // 正常调用只沉淀到 localStorage（排障数据不丢）；出错才在 console 出声，控制台保持干净
+    if (entry.errCode) console.warn('[ai-call]', last[last.length - 1])
   } catch { /* 环境不支持时忽略 */ }
 }
 
@@ -412,6 +413,12 @@ export async function assistantTurn(
     const requirement = typeof obj?.requirement === 'string' && obj.requirement.trim() ? obj.requirement.trim() : ''
     if (!requirement) {
       return done('ask', { action: 'ask', text: '你想怎么改这个片段？说下具体需求，比如「改成支持 options 参数」。', ids: [], note: '' })
+    }
+    // 空泛需求本地兜底：只说"优化/改进/美化"没说清改成什么样 → 转 ask，别让模型臆测需求白跑一次慢修改。
+    // 词表刻意保守、限定长度，避免误杀"改成红色主题"这类短但具体的需求；与 prompt 规则双保险
+    const vagueWords = ['优化', '改进', '美化', '精简', '调整', '改一下', '优化一下', '改进一下', '美化一下', '精简一下', '修改代码', '改代码', '改好看点', '弄好看点', '改改']
+    if (vagueWords.includes(requirement) || (requirement.length <= 6 && vagueWords.some(w => requirement.startsWith(w)))) {
+      return done('ask', { action: 'ask', text: '你想把这段代码改成什么样？说下具体改法，比如「改成支持 options 参数」「精简成 20 行」。', ids: [], note: '' })
     }
     const note = typeof obj?.note === 'string' && obj.note.trim()
       ? obj.note.trim()

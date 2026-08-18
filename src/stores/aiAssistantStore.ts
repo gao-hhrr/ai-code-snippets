@@ -11,8 +11,13 @@ import { loadAIConversation, persistAIConversation } from '@/services/storage'
 
 export const useAiAssistantStore = defineStore('aiAssistant', () => {
   const snippetStore = useSnippetStore()
-  // 对话从 sessionStorage 恢复（初始化读，与编辑器草稿同策略；临时状态，关标签页即清）
-  const messages = ref<AssistantTurnMessage[]>(loadAIConversation())
+  // 对话从 sessionStorage 恢复（初始化读，与编辑器草稿同策略；临时状态，关标签页即清）。
+  // 恢复时把"生成中"状态复位成失败：刷新/重进页面 = 请求已丢，保留 running 会恢复出永久转圈的卡
+  const messages = ref<AssistantTurnMessage[]>(loadAIConversation().map(m => {
+    if (m.modifyState === 'running') return { ...m, modifyState: 'error', content: m.content + '（修改被中断，请重新发起）' }
+    if (m.operateState === 'running') return { ...m, operateState: 'error' }
+    return m
+  }))
   const sending = ref(false)
   // 结构化错误：人话 text 给用户看，code/status/detail 供「详情」展开与调试定位
   const error = ref<{ text: string; code?: string; status?: number; detail?: string } | null>(null)
@@ -47,12 +52,26 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 单次请求超时：正常一轮 6-12s，但推理模型对否定/排除语义（"没有注释的"）推理可达 1000+ token、
   // 约 40-50 秒，30s 会误杀正常慢推理（实测超时后重试也必超时）；60s 兜底网络挂起与服务端异常
   const REQUEST_TIMEOUT = 60_000
+  // 修改流程独立超时：改代码是重任务（推理 + 生成完整代码，30-90s 常见），不与搜索共用 60s——
+  // assistantTurn 已耗的时间会压缩它；独立计时，stop 仍可中断
+  const MODIFY_TIMEOUT = 90_000
+  // 新建流程独立超时：生成代码的推理可能比修改还长（首次空 content 后的重试也占同一预算），
+  // 120s 会被"挑战极限"这类极端需求吃满；180s 给足收敛空间，正常需求 1-10s 远低于此不受影响
+  const CREATE_TIMEOUT = 180_000
   const controller = ref<AbortController | null>(null)
+  // 修改流程的独立控制器：与搜索请求互不牵连，用户点停止时由 stop 一并中断
+  let modifyController: AbortController | null = null
+  // 新建流程（create 生成代码）的独立控制器：同 modify，生成是重任务，与搜索超时/中断解耦
+  let createController: AbortController | null = null
   // 后台补全四步总结的控制器：主回复先显示、总结稍后到；新一轮 backfill / reset 作废上一个未完成的
   let summaryController: AbortController | null = null
 
   function reset() {
     controller.value?.abort()
+    modifyController?.abort()
+    modifyController = null
+    createController?.abort()
+    createController = null
     summaryController?.abort()
     summaryController = null
     messages.value = []
@@ -88,9 +107,11 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       })
   }
 
-  // 用户主动停止搜索（AbortError 由 catch 分支转为提示）
+  // 用户主动停止搜索/修改（AbortError 由 catch 分支转为提示）
   function stop() {
     controller.value?.abort()
+    modifyController?.abort()
+    createController?.abort()
   }
 
   // 换话题：插入可见分割线 + 置 freshSearch，下一条消息不带历史发送（divider 不计轮数）
@@ -152,8 +173,10 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
           composing.value = true
         }
       })
-      // AI 修改：assistantTurn 只判断"改哪个、改什么"，真正的改写走 modifyCode 流式（仍在 sending 内）
+      // AI 修改：assistantTurn 只判断"改哪个、改什么"，真正的改写走 modifyCode 流式（仍在 sending 内）。
+      // 先停掉搜索的 60s 计时：改代码是重任务，由 runModify 用独立更长的超时（MODIFY_TIMEOUT）接管
       if (reply.action === 'modify') {
+        clearTimeout(timeout)
         await runModify(reply)
         return
       }
@@ -200,7 +223,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   }
 
   // AI 修改流程：AI 只给建议（modify 动作），改写在本地执行，结果存消息供 diff + 二次确认。
-  // 二次确认 = 页面展示 AI 提醒文案 + diff 卡，"替换原代码"再弹确认框才真正落库
+  // 二次确认 = 页面展示 AI 提醒文案 + diff 卡，"替换原代码"再弹确认框才真正落库。
+  // 独立 AbortController + 独立超时：不共享 send 的 ac（搜索的 60s 已停），stop() 仍能中断
   async function runModify(reply: AssistantReply) {
     const msg: AssistantTurnMessage = {
       role: 'assistant',
@@ -220,8 +244,22 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       msg.content += '（找不到目标片段或需求为空，请重试）'
       return
     }
+    const mc = new AbortController()
+    modifyController = mc
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      mc.abort()
+    }, MODIFY_TIMEOUT)
     try {
-      const result = await modifyCode(target.code, reply.requirement, { signal: controller.value?.signal })
+      // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度），服务端边生成边返回，不再干等整段响应
+      const result = await modifyCode(target.code, reply.requirement, {
+        signal: mc.signal,
+        onChunk: (delta) => {
+          composing.value = true
+          msg.modifyProgress = (msg.modifyProgress ?? 0) + delta.length
+        }
+      })
       if (result) {
         msg.modifiedCode = result
         msg.modifyState = 'done'
@@ -231,7 +269,12 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       }
     } catch (err) {
       msg.modifyState = 'error'
-      msg.content += isAbortError(err) ? '（修改已停止）' : '（修改失败，请重试）'
+      msg.content += timedOut
+        ? '（修改超时：代码较长或 AI 推理较慢，已自动停止，请重试）'
+        : isAbortError(err) ? '（修改已停止）' : '（修改失败，请重试）'
+    } finally {
+      clearTimeout(timer)
+      if (modifyController === mc) modifyController = null
     }
   }
 
@@ -257,9 +300,21 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     backfillSummary(msg)
 
     if (reply.op === 'create') {
+      // 独立控制器 + 独立超时（对齐 runModify）：生成代码是重任务（推理 + 完整代码），
+      // 不与搜索的 60s 共用——assistantTurn 已耗时间会压缩它；流式生成边出边报进度
+      const cc = new AbortController()
+      createController = cc
+      let timedOut = false
+      const timer = setTimeout(() => {
+        timedOut = true
+        cc.abort()
+      }, CREATE_TIMEOUT)
       try {
         const code = await generateCode(reply.value || '', reply.language || 'text', {
-          signal: controller.value?.signal
+          signal: cc.signal,
+          onChunk: (delta) => {
+            msg.createdProgress = (msg.createdProgress ?? 0) + delta.length
+          }
         })
         if (code) {
           msg.createdCode = code
@@ -267,11 +322,16 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
           msg.operateState = 'pending'
         } else {
           msg.operateState = 'error'
-          msg.content = '（AI 未生成代码，请重试）'
+          msg.content = '（AI 未生成代码，请换种说法重试）'
         }
       } catch (err) {
         msg.operateState = 'error'
-        msg.content = isAbortError(err) ? '（生成已停止）' : '（生成失败，请重试）'
+        msg.content = timedOut
+          ? '（生成超时：AI 推理较慢，已自动停止，请重试）'
+          : isAbortError(err) ? '（生成已停止）' : '（生成失败，请重试）'
+      } finally {
+        clearTimeout(timer)
+        if (createController === cc) createController = null
       }
     }
   }
