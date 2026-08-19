@@ -6,6 +6,8 @@ import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
 import './style.css'
+// 所有界面图标都定义在 src/assets/iconfont.svg（一个 <svg> 装多个 <symbol>），
+// 组件通过 AppIcon.vue 的 <use> 引用；这里只负责在启动时把整个文件注入页面
 import iconfontSvg from './assets/iconfont.svg?raw' // ?raw：让 Vite 以纯字符串返回 SVG 内容，才能手动注入 DOM
 
 // iconfont symbol 必须在 app.mount 前注入 DOM，否则首屏 <use> 解析不到 symbol、图标空白。
