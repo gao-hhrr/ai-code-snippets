@@ -58,7 +58,7 @@ function confirmBatchDelete() {
           class="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-github-blue bg-github-blue-light rounded-lg hover:bg-github-blue-light-hover transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           :disabled="snippetStore.selectedIds.length === 0"
           @click="showBatchFolder = !showBatchFolder"
-        ><AppIcon name="star" :size="14" /> 收藏</button>
+        >收藏</button>
         <Transition name="pop">
           <FolderPicker
             v-if="showBatchFolder"
@@ -84,7 +84,7 @@ function confirmBatchDelete() {
       <button
         class="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-zinc-700 bg-zinc-200 rounded-lg hover:bg-zinc-300 transition-colors cursor-pointer"
         @click="snippetStore.clearSelection()"
-      ><AppIcon name="x" :size="14" /> 清空</button>
+      >清空</button>
     </div>
   </Transition>
 

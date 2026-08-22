@@ -62,7 +62,7 @@ VITE_AI_MODEL=deepseek-v4-flash   # 可选，默认即可
 **AI 工程保障**
 - SSE 流式接收 + AbortController 中断（流式用于捕获思考过程、驱动阶段指示与进度；文字攒完一次性渲染）
 - 503 退避重试 + 错误码体系（AIError 分类）
-- function calling 调度 6 个工具；AI 只提议、关键操作走用户确认
+- function calling 调度 5 个工具（modify 归入 operate 的 op）；AI 只提议、关键操作走用户确认
 
 ## 项目结构（入口地图）
 

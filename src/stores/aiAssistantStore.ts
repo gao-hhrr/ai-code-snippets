@@ -1,11 +1,11 @@
 // ════════════════════════════════════════════════════════
-// stores/aiAssistantStore.ts —— AI 助手状态中心：对话流式累积 / 四步阶段指示 / 6 工具库操作确认与执行
+// stores/aiAssistantStore.ts —— AI 助手状态中心：对话流式累积 / 四步阶段指示 / 5 工具库操作确认与执行
 // ════════════════════════════════════════════════════════
 import { defineStore } from 'pinia'
 import { ref, reactive, computed, watch } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
-import { assistantTurn, modifyCode, generateCode, summarizeThinking, AIError, isAbortError, REVERSIBLE_OPS } from '@/api/ai'
-import type { AssistantTurnMessage, AssistantReply, OperateOp, OperateStep } from '@/api/ai'
+import { assistantTurn, modifyCode, generateCode, summarizeThinking, AIError, isAbortError, REVERSIBLE_OPS, OP_FOLDER } from '@/api/ai'
+import type { AssistantTurnMessage, AssistantReply, OperateStep } from '@/api/ai'
 import { downloadText, langToExt } from '@/services/file'
 import { loadAIConversation, persistAIConversation } from '@/services/storage'
 import { DRAFT_KEY } from '@/composables/useDraft'
@@ -177,14 +177,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
           composing.value = true
         }
       })
-      // AI 修改：assistantTurn 只判断"改哪个、改什么"，真正的改写走 modifyCode 流式（仍在 sending 内）。
-      // 先停掉搜索的 60s 计时：改代码是重任务，由 runModify 用独立更长的超时（MODIFY_TIMEOUT）接管
-      if (reply.action === 'modify') {
-        clearTimeout(timeout)
-        await runModify(reply)
-        return
-      }
-      // AI 提议库操作：只生成确认卡，不执行，等用户确认（confirmOperate）；create 需先生成代码
+      // AI 提议操作（含 op:'modify' 修改代码）：只生成确认卡，不执行，等用户确认（confirmOperate）；
+      // create / modify 是生成式操作，需先在本地生成代码/改写代码
       if (reply.action === 'operate') {
         await runOperate(reply)
         return
@@ -226,69 +220,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     send(lastUserText.value)
   }
 
-  // AI 修改流程：AI 只给建议（modify 动作），改写在本地执行，结果存消息供 diff + 二次确认。
-  // 二次确认 = 页面展示 AI 提醒文案 + diff 卡，"替换原代码"再弹确认框才真正落库。
-  // 独立 AbortController + 独立超时：不共享 send 的 ac（搜索的 60s 已停），stop() 仍能中断
-  async function runModify(reply: AssistantReply) {
-    // 必须 reactive() 包裹再 push：数组里存的是 proxy，push 后直接改原始对象（msg.xxx = ...）
-    // 不会经过 proxy → deep watch(messages, persist) 收不到触发 → 落盘停在 running → 刷新恢复成 error
-    const msg = reactive<AssistantTurnMessage>({
-      role: 'assistant',
-      content: reply.text,
-      note: reply.note,
-      searchIds: reply.ids,
-      reasoning: reasoning.value,
-      requirement: reply.requirement,
-      modifyState: 'running'
-    })
-    messages.value.push(msg)
-    backfillSummary(msg)
-
-    const target = snippetStore.snippets.find(s => s.id === reply.ids[0])
-    if (!target || !reply.requirement) {
-      msg.modifyState = 'error'
-      msg.content += '（找不到目标片段或需求为空，请重试）'
-      return
-    }
-    const mc = new AbortController()
-    modifyController = mc
-    let timedOut = false
-    // 修改同样受深度思考开关影响：非深度 90s 兜底，深度思考（推理）放宽到 180s
-    const timer = setTimeout(() => {
-      timedOut = true
-      mc.abort()
-    }, deepThink.value ? DEEP_THINK_TIMEOUT : MODIFY_TIMEOUT)
-    try {
-      // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度），服务端边生成边返回，不再干等整段响应
-      const result = await modifyCode(target.code, reply.requirement, {
-        signal: mc.signal,
-        thinking: deepThink.value,
-        onChunk: (delta) => {
-          composing.value = true
-          msg.modifyProgress = (msg.modifyProgress ?? 0) + delta.length
-        },
-        // 深度思考失败降级：标记消息，ModifyCard 提示用户本次是普通模式结果
-        onFallback: () => { msg.modifiedDegraded = true }
-      })
-      if (result) {
-        msg.modifiedCode = result
-        msg.modifyState = 'done'
-      } else {
-        msg.modifyState = 'error'
-        msg.content += '（AI 未返回修改结果，请换种说法重试）'
-      }
-    } catch (err) {
-      msg.modifyState = 'error'
-      msg.content += timedOut
-        ? '（修改超时：代码较长或 AI 推理较慢，已自动停止，请重试）'
-        : isAbortError(err) ? '（修改已停止）' : '（修改失败，请重试）'
-    } finally {
-      clearTimeout(timer)
-      if (modifyController === mc) modifyController = null
-    }
-  }
-
-  // AI 提议库结构操作（删除/重命名/收藏/导出/新建/清空/收藏夹管理/改描述语言）：只展示确认卡，绝不直接执行。
+  // AI 提议库结构操作（删除/重命名/收藏/导出/新建/清空/收藏夹管理/改描述语言/修改代码）：只展示确认卡，绝不直接执行。
   // create 需先在本地调 generateCode 生成代码，生成完才转待确认；收藏夹类操作 ids 为空，targetTitle 取夹名
   async function runOperate(reply: AssistantReply) {
     // 复合操作（ops）：一次指令做多件事，逐条执行（每步一张结果卡）；单操作转成单个 step 走同一路径
@@ -304,10 +236,10 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 单步库操作：create 生成代码转编辑页；可逆操作直接执行；不可逆操作落 pending 等用户确认。
   // 复合操作每步一条消息，状态机与单操作完全一致
   async function runOperateStep(step: OperateStep, note: string, reasoningText: string) {
-    const isFolderOp = step.op === 'createFolder' || step.op === 'renameFolder' || step.op === 'deleteFolder' || step.op === 'clearFolder'
+    const isFolderOp = OP_FOLDER.includes(step.op)
     const target = step.ids?.[0] ? snippetStore.snippets.find(s => s.id === step.ids![0]) : undefined
-    // 同 runModify：必须 reactive() 包裹。create 生成中 push 后还要改 operateState/createdCode/createdProgress 等，
-    // 改原始对象不会触发 deep watch 落盘 → 刷新时 create 卡停在 running 被恢复成 error（操作卡消失）
+    // 生成式分支（create/modify）同理：必须 reactive() 包裹。生成中 push 后还要改 operateState/createdCode/createdProgress/modifyState 等，
+    // 改原始对象不会触发 deep watch 落盘 → 刷新时卡停在 running 被恢复成 error（操作卡消失）
     const msg = reactive<AssistantTurnMessage>({
       role: 'assistant',
       content: '',
@@ -318,15 +250,63 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       operateValue: step.value,
       operateTarget: step.target,
       operateField: step.field,
-      operateState: step.op === 'create' ? 'running' : 'pending',
+      // modify 不设 operateState：走 ModifyCard 渲染（modifyState 字段组），OperateCard 不会误渲染
+      operateState: step.op === 'modify' ? undefined : (step.op === 'create' ? 'running' : 'pending'),
       targetTitle: isFolderOp ? (step.op === 'renameFolder' ? step.target : step.value) : (target?.title || '')
     })
     messages.value.push(msg)
     // 复合操作后续步骤不带思考，也就不需要后台补四步总结
     if (reasoningText) backfillSummary(msg)
 
+    // 单修改（改代码）：生成式流程，ModifyCard 渲染。assistantTurn 只判定"改哪个+怎么改"（ids+value），
+    // 真正改写走 modifyCode 流式。独立控制器 + 独立超时：改代码是重任务，不与搜索的 60s 共用
+    if (step.op === 'modify') {
+      if (!target || !step.value) {
+        msg.modifyState = 'error'
+        msg.content = '（找不到目标片段或需求为空，请重试）'
+        return
+      }
+      const mc = new AbortController()
+      modifyController = mc
+      let timedOut = false
+      // 修改同样受深度思考开关影响：非深度 90s 兜底，深度思考（推理）放宽到 180s
+      const timer = setTimeout(() => {
+        timedOut = true
+        mc.abort()
+      }, deepThink.value ? DEEP_THINK_TIMEOUT : MODIFY_TIMEOUT)
+      msg.requirement = step.value
+      try {
+        // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度），服务端边生成边返回，不再干等整段响应
+        const result = await modifyCode(target.code, step.value, {
+          signal: mc.signal,
+          thinking: deepThink.value,
+          onChunk: (delta) => {
+            msg.modifyProgress = (msg.modifyProgress ?? 0) + delta.length
+          },
+          // 深度思考失败降级：标记消息，ModifyCard 提示用户本次是普通模式结果
+          onFallback: () => { msg.modifiedDegraded = true }
+        })
+        if (result) {
+          msg.modifiedCode = result
+          msg.modifyState = 'done'
+        } else {
+          msg.modifyState = 'error'
+          msg.content = '（AI 未返回修改结果，请换种说法重试）'
+        }
+      } catch (err) {
+        msg.modifyState = 'error'
+        msg.content = timedOut
+          ? '（修改超时：代码较长或 AI 推理较慢，已自动停止，请重试）'
+          : isAbortError(err) ? '（修改已停止）' : '（修改失败，请重试）'
+      } finally {
+        clearTimeout(timer)
+        if (modifyController === mc) modifyController = null
+      }
+      return
+    }
+
     if (step.op === 'create') {
-      // 独立控制器 + 独立超时（对齐 runModify）：生成代码是重任务（推理 + 完整代码），
+      // 独立控制器 + 独立超时（对齐 modify 分支）：生成代码是重任务（推理 + 完整代码），
       // 不与搜索的 60s 共用——assistantTurn 已耗时间会压缩它；流式生成边出边报进度
       const cc = new AbortController()
       createController = cc
@@ -405,9 +385,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     if (msg.operateState !== 'pending') return
     // create 已改由 confirmCreateToEditor 处理（转编辑页看完整代码），不再在此直接入库
     if (msg.operateOp === 'create') return
-    const folderOps: OperateOp[] = ['createFolder', 'renameFolder', 'deleteFolder', 'clearFolder']
-    // clear/收藏夹类操作不需要片段编号，其他操作需要
-    if (msg.operateOp !== 'clear' && !folderOps.includes(msg.operateOp!) && !msg.searchIds?.length) return
+    // clear/收藏夹类操作不需要片段编号，其他操作需要（夹操作名单来自 OP_META 推导）
+    if (msg.operateOp !== 'clear' && !OP_FOLDER.includes(msg.operateOp!) && !msg.searchIds?.length) return
     try {
       const ids = msg.searchIds ?? []
       switch (msg.operateOp) {

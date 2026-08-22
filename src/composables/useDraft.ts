@@ -30,13 +30,15 @@ export function useDraft(opts: {
   // 已保存快照：保存成功后记下当时的 title/code/description，作为后续「是否又改了」的基准。
   // 不能用 baseline 当基准：baseline 是进页面时的内容，保存过一次后再编辑时它仍是旧值，
   // 加上旧逻辑「cleared 直接放行」，会导致保存后再改、离开时不再弹确认（bug）
-  let snapshot = { title: baseline.title, code: baseline.code, description: baseline.description }
+  // snapshot 必须是 ref：isDirty 的 computed 只追踪响应式依赖，若 snapshot 是普通对象，
+  // markCleared 改它不会让 isDirty 缓存失效 → 仍返回旧的 true → 保存后离开照样弹「未保存」确认（回归）
+  const snapshot = ref({ title: baseline.title, code: baseline.code, description: baseline.description })
 
   // 有没有改动的判断（与快照比，而非与进页面时的 baseline 比）
   const isDirty = computed(() =>
-    title.value !== snapshot.title ||
-    code.value !== snapshot.code ||
-    description.value !== snapshot.description
+    title.value !== snapshot.value.title ||
+    code.value !== snapshot.value.code ||
+    description.value !== snapshot.value.description
   )
 
   //进页面恢复草稿
@@ -146,7 +148,7 @@ export function useDraft(opts: {
     // 保存成功后调用：把已保存内容更新为「快照基准」并清草稿，
     // 之后没再改就直接放行，改了仍会正常弹确认
     markCleared() {
-      snapshot = { title: title.value, code: code.value, description: description.value }
+      snapshot.value = { title: title.value, code: code.value, description: description.value }
       cleared = true
       sessionStorage.removeItem(DRAFT_KEY)
     }

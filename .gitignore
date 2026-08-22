@@ -12,9 +12,11 @@ dist
 dist-ssr
 *.local
 .env
-# 本地面试复习文档（不入库）
-架构决策记录与执行计划.md
+# 本地复习文档（不入库）
+架构决策记录.md
+面试备战记录.md
 项目难点记录.md
+AI核心梳理.md
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

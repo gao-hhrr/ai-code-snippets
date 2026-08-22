@@ -211,9 +211,7 @@ function confirmDeleteFolder() {
                   title="保存"
                   :disabled="!newFolderName.trim() || isNewNameTaken"
                   @click="confirmCreateFolder"
-                >
-                  <AppIcon name="check" :size="14" /> 保存
-                </button>
+                >保存</button>
               </div>
             </div>
           </div>

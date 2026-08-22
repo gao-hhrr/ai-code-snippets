@@ -1,5 +1,5 @@
 <!-- ════════════════════════════════════════════════════════
-     views/ai-assistant/index.vue —— AI 助手页：对话式检索 + 6 工具库操作确认执行（KeepAlive 按组件名缓存）
+     views/ai-assistant/index.vue —— AI 助手页：对话式检索 + 5 工具库操作确认执行（KeepAlive 按组件名缓存）
      ════════════════════════════════════════════════════════ -->
 <script lang="ts">
 // 显式声明组件名：App.vue 的 KeepAlive :include 按名字匹配，显式声明比依赖文件名推断更可靠

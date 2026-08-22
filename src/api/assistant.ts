@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════
-// api/assistant.ts —— AI 助手核心：召回候选 → 模型输出动作 JSON → 本地校验/分发（6 个 function calling 工具）
+// api/assistant.ts —— AI 助手核心：召回候选 → 模型输出动作 JSON → 本地校验/分发（5 个 function calling 工具）
 // ════════════════════════════════════════════════════════
 // 设计：不做意图解析、不做属性过滤。全库片段（标题/语言/AI 生成的人话描述/收藏夹/完整代码）
 // 一次进 prompt，模型自主阅读内容决策：输出符合的编号、或澄清（ask）、或寒暄（chat）。
@@ -23,10 +23,44 @@ const SNIPPET_CODE_LIMIT = 3000
 // （全量进 prompt 在库 100-200 条时会爆 DeepSeek 上下文窗口 + 成本/首字延迟翻倍）
 const RECALL_LIMIT = 25
 
-const VALID_OPS: OperateOp[] = ['delete', 'rename', 'export', 'favorite', 'unfavorite', 'create', 'clear', 'createFolder', 'renameFolder', 'deleteFolder', 'clearFolder', 'meta']
-const ACTIONS = ['search', 'summarize', 'modify', 'operate', 'ask', 'chat'] as const
+// ---------- 操作分类元数据（D17：动作 × 对象，行为规则由分类推导）----------
+// 13 种操作 = 9 个原子动作 × 3 个对象（片段/收藏夹/库）的矩阵（见 架构决策记录.md D17）。
+// 散落的 VALID_OPS / REVERSIBLE_OPS / NON_COMPOSABLE_OPS / 校验分支 / store 的 folderOps 全由这张表推导，
+// 新增操作（复制片段、导出收藏夹等）= 表里加一行，其余代码零改动。
+interface OpMeta {
+  action: 'create' | 'modify' | 'rename' | 'meta' | 'favorite' | 'unfavorite' | 'delete' | 'clear' | 'export'
+  target: 'snippet' | 'folder' | 'library'
+  reversible: boolean // 语义可逆（低风险、可撤销/可重做）
+  generative: boolean // 生成式：需二次流式生成内容 + 审阅（modify/create），执行走专用流程，不进 ops 自动执行
+}
+const OP_META: Record<OperateOp, OpMeta> = {
+  create:       { action: 'create',     target: 'snippet', reversible: false, generative: true },
+  modify:       { action: 'modify',     target: 'snippet', reversible: true,  generative: true },
+  rename:       { action: 'rename',     target: 'snippet', reversible: true,  generative: false },
+  meta:         { action: 'meta',       target: 'snippet', reversible: true,  generative: false },
+  favorite:     { action: 'favorite',   target: 'snippet', reversible: true,  generative: false },
+  unfavorite:   { action: 'unfavorite', target: 'snippet', reversible: true,  generative: false },
+  delete:       { action: 'delete',     target: 'snippet', reversible: false, generative: false },
+  export:       { action: 'export',     target: 'snippet', reversible: true,  generative: false },
+  createFolder: { action: 'create',     target: 'folder',  reversible: true,  generative: false },
+  renameFolder: { action: 'rename',     target: 'folder',  reversible: true,  generative: false },
+  deleteFolder: { action: 'delete',     target: 'folder',  reversible: false, generative: false },
+  clearFolder:  { action: 'clear',      target: 'folder',  reversible: false, generative: false },
+  clear:        { action: 'clear',      target: 'library', reversible: false, generative: false }
+}
+// 合法操作全集（含 modify）：单一事实源，不再散落字面量
+const VALID_OPS = Object.keys(OP_META) as OperateOp[]
 // 按长度倒序：长 op（unfavorite/clearFolder…）先匹配，避免 favorite 抢在 unfavorite、clear 抢在 clearFolder 前
 const VALID_OPS_BY_LENGTH = [...VALID_OPS].sort((a, b) => b.length - a.length)
+// 可自动执行（可逆且非生成式）：单操作 store 直接执行（不弹确认卡）；复合操作（ops）也仅限这些。
+// 导出供 store 复用（单一事实源）。modify/create 因生成式（需流式生成+审阅）不在其中。
+export const REVERSIBLE_OPS: OperateOp[] = VALID_OPS.filter(op => OP_META[op].reversible && !OP_META[op].generative)
+// 不可进 ops 组合：不可逆需单独确认（delete/clear/deleteFolder/clearFolder）+ 生成式需审阅（modify/create）
+const NON_COMPOSABLE_OPS = new Set<OperateOp>(VALID_OPS.filter(op => !OP_META[op].reversible || OP_META[op].generative))
+// 收藏夹操作（按对象推导）：store/校验判断"夹操作按夹名指代、不需要片段编号"复用
+export const OP_FOLDER = VALID_OPS.filter(op => OP_META[op].target === 'folder') as OperateOp[]
+
+const ACTIONS = ['search', 'summarize', 'operate', 'ask', 'chat'] as const
 
 // 模型偶发在 op 字段里混入 XML 工具调用残留（实测如 favorite"><parameter name="ids">[1]），
 // 导致 op 校验失败、复合操作整轮掉进通用 ask。从字符串开头匹配最长的合法 op 前缀救回污染值。
@@ -39,14 +73,8 @@ function matchOp(value: unknown): OperateOp | null {
   return null
 }
 
-// 可逆/低风险操作：单操作时 store 直接执行（不弹确认卡）；复合操作（ops）也仅限这些——
-// 一条指令做多件事（建夹+放入、改名+收藏、移动等）时逐条直接落地。
-// 导出供 store 复用（单一事实源）。不可逆/需确认的 delete/clear/deleteFolder/clearFolder 与
-// 转编辑页的 create 不在此列：单操作走确认卡，复合操作则转 ask 提示分步。
-export const REVERSIBLE_OPS: OperateOp[] = ['export', 'favorite', 'unfavorite', 'createFolder', 'rename', 'renameFolder', 'meta']
-
 // ---------- function calling 工具注册 ----------
-// 6 个动作各注册一个 tool，模型「选工具」代替「写 action 字段」。parameters 是 JSON Schema，
+// 5 个动作各注册一个 tool，模型「选工具」代替「写 action 字段」。parameters 是 JSON Schema，
 // 模型产出的 arguments 由 API 协议保证为合法 JSON——替代手写 tryExtractJSON（截断/嵌套/转义不再怕）。
 // 行为规则（追问范围、否定查询、组合约束、能力边界）仍写在 prompt 里，Schema 只负责形状。
 const ASSISTANT_TOOLS: ChatTool[] = [
@@ -83,31 +111,15 @@ const ASSISTANT_TOOLS: ChatTool[] = [
   {
     type: 'function',
     function: {
-      name: 'modify',
-      description: '用户明确说了要修改已有片段的代码，且说清了改哪个 + 具体怎么改（"把第一个改成支持 options 参数"）。若没说改哪个片段、或只说"帮我改下/优化一下"这类空泛需求没说清改成什么样 → 不要调用本工具，改用 ask 澄清。只能提议，绝不直接改。',
-      parameters: {
-        type: 'object',
-        properties: {
-          ids: { type: 'array', items: { type: 'integer' }, description: '要修改的片段编号，通常 1 个' },
-          requirement: { type: 'string', description: '提炼后的修改需求，必须包含具体改法（改成什么样/加什么能力/怎么调整），去掉「帮我」「第一个」这类对话词；空泛的"优化/改进"不算有效需求' },
-          note: { type: 'string', description: '可选：一句提醒用户确认改动的说明' }
-        },
-        required: ['ids', 'requirement']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
       name: 'operate',
-      description: '用户想做库结构操作（删除/重命名/导出/收藏/取消收藏/新建/清空/收藏夹管理/改描述或语言）。只能提议，绝不直接执行，实际写入由用户确认后前端完成。一条指令做多件事时用 ops 数组列出所有步骤（仅限可逆操作：收藏/取消收藏/导出/新建夹/改名/移动/改描述语言）。',
+      description: '用户想做库操作（删除/重命名/导出/收藏/取消收藏/新建/清空/收藏夹管理/改描述或语言/修改代码）。只能提议，绝不直接执行，实际写入由用户确认后前端完成。修改代码是 op:"modify"（ids=目标编号、value=修改需求，必须说清怎么改，空泛"优化一下"不算有效需求）；用户没说改哪个、或只说"帮我改下/优化一下"没说清改成什么样 → 改用 ask 澄清，不要调本工具。一条指令做多件事时用 ops 数组列出所有步骤（仅限可逆操作：收藏/取消收藏/导出/新建夹/改名/移动/改描述语言；不含修改代码与新建代码）。',
       parameters: {
         type: 'object',
         properties: {
           op: { type: 'string', enum: VALID_OPS, description: '操作类型（单操作时用；用 ops 时忽略）' },
           ops: {
             type: 'array',
-            description: '复合操作：一次要求做多件事（如「新建收藏夹并把第 1 个放进去」）时按顺序列出所有步骤；每个步骤 op/ids/value/target/field 与单操作同义；只限可逆操作，不要包含删除/清空/新建代码',
+            description: '复合操作：一次要求做多件事（如「新建收藏夹并把第 1 个放进去」）时按顺序列出所有步骤；每个步骤 op/ids/value/target/field 与单操作同义；只限可逆操作，不要包含删除/清空/新建代码/修改代码',
             items: {
               type: 'object',
               properties: {
@@ -120,8 +132,8 @@ const ASSISTANT_TOOLS: ChatTool[] = [
               required: ['op']
             }
           },
-          ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite 支持多个；create/clear 不需要；新建收藏夹并放入片段时，用 ops 里第二步 favorite 的 ids）' },
-          value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的标题或需求 / 各 folder 操作的夹名 / meta 的新值' },
+          ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite/modify 支持多个；create/clear 不需要；新建收藏夹并放入片段时，用 ops 里第二步 favorite 的 ids）' },
+          value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的标题或需求 / 各 folder 操作的夹名 / meta 的新值 / modify 的修改需求' },
           target: { type: 'string', description: 'renameFolder 的旧夹名（从「当前收藏夹」里选）' },
           field: { type: 'string', enum: ['description', 'language'], description: 'meta 的目标字段' },
           language: { type: 'string', description: 'create 的代码语言' },
@@ -240,19 +252,35 @@ async function chatRetryIfEmpty(
 }
 
 // 模型输出编号 → 候选下标：去重、丢弃越界/非整数（编号对应候选集，返回时映射回真实 id）。
-// 五处动作（search/summarize/modify/operate/meta）共用同一套校验。
+// 各处动作（search/summarize 与 operate 各 op 的目标片段）共用同一套编号校验。
 function mapValidIds(ids: unknown, max: number): number[] {
   return [...new Set(
     Array.isArray(ids) ? ids.map(n => Number(n)).filter(n => Number.isInteger(n) && n >= 1 && n <= max) : []
   )]
 }
 
-// 复合操作（ops）里不允许的操作：不可逆需确认、或转编辑页，进 ops 会导致部分步骤静默丢失或确认粒度混乱
-const NON_COMPOSABLE_OPS = new Set<OperateOp>(['delete', 'clear', 'deleteFolder', 'clearFolder', 'create'])
 // 复合操作里混入新建代码时的引导文案：create 必须先编辑页确认保存，与收藏夹等同步操作无法一组落地。
 // 模型只会把用户完整意图写进 ops，这里统一转 ask 分两步（先建代码，再建夹+放入）——
 // 否则模型会随机只做其中一部分（实测：只建夹不建代码、或只建代码把收藏夹丢进 note）
 const CREATE_COMBO_ASK = '新建代码需要先进入编辑页确认保存，不能和收藏夹等操作一起做。建议分两步：先单独说「新建一个 xx 的代码」保存好，再对我说「新建收藏夹 xx，把刚才的放进去」，我一步完成。'
+
+// 修改代码 + 库操作混合请求（"把第 1 个改成 xx，顺便放进新建的 常用 夹"）引导文案：
+// 与 CREATE_COMBO_ASK 同模式——modify 是生成式操作（流式生成+diff 审阅）、库操作是声明式，两类无法一组落地。
+// 双保险：模型把 modify 混进 ops → NON_COMPOSABLE_OPS 整组拒转 ask；模型只挑单 op（丢弃另一半）→ hasMixedIntent 兜底。
+const MODIFY_COMBO_ASK = '修改代码和收藏夹等库操作不能一步完成。建议分两步：先单独说「把要改的片段改成 xx」，确认保存好改动；再对我说「新建收藏夹 xx，把刚才的放进去」，我一步完成。'
+
+// 混合请求本地兜底词表：模型已选 operate 时，检测用户原文是否同时含"改代码"与"库操作"意图，
+// 命中说明另一半被静默丢弃 → 转 MODIFY_COMBO_ASK 分步。词表刻意保守，两处注意：
+// ①「改名/重命名/改描述/改语言」是库操作（模型该走 operate），不能进 MODIFY_WORDS，否则"改名并收藏"这类
+//   纯声明式复合会被误杀；
+// ② 不用裸"修改/优化"——作名词/过去指代太常见（实测"新建收藏夹，把刚才修改的代码放进去"被误伤成混合请求），
+//   只收主动改代码短语（改成/改一下/帮我改/修改成/优化一下…）。
+// 宁可漏杀（漏了还有 prompt 规则 + validateOperateStep 双保险）也不误伤正常复合操作。
+const MODIFY_WORDS = ['改成', '改一下', '改改', '帮我改', '给我改', '修改成', '修改一下', '帮我修改', '优化一下', '优化下', '重写', '重构', '换成', '精简', '美化']
+const LIB_OP_WORDS = ['收藏', '新建', '放入', '放进', '夹', '重命名', '改名', '导出', '删除', '清空', '移动']
+function hasMixedIntent(message: string): boolean {
+  return MODIFY_WORDS.some(w => message.includes(w)) && LIB_OP_WORDS.some(w => message.includes(w))
+}
 
 // 复合操作单步校验：op 合法、参数齐全（片段编号/夹名/新值），且不是非可逆操作。
 // 任一步不过 → 整组转 ask 分步，避免「建夹了但片段没放进去」这类部分执行。
@@ -267,11 +295,15 @@ function validateOperateStep(
     if (op === 'create') {
       return { ok: false, ask: CREATE_COMBO_ASK }
     }
+    // modify 是生成式操作（流式生成+diff 审阅），与声明式库操作无法一组落地，引导分步
+    if (op === 'modify') {
+      return { ok: false, ask: MODIFY_COMBO_ASK }
+    }
     return { ok: false, ask: '这个操作包含删除/清空等不可逆步骤，需要单独确认。建议先做收藏/改名等可逆部分，删除/清空单独告诉我，我会弹确认框。' }
   }
   const value = typeof raw.value === 'string' && raw.value.trim() ? raw.value.trim() : ''
   const toIds = (ids: unknown) => mapValidIds(ids, candidates.length).map(n => candidates[n - 1].id)
-  if (op === 'createFolder' || op === 'renameFolder' || op === 'deleteFolder' || op === 'clearFolder') {
+  if (OP_FOLDER.includes(op)) {
     if (op === 'renameFolder') {
       const target = typeof raw.target === 'string' && raw.target.trim() ? raw.target.trim() : ''
       if (!value || !target) return { ok: false, ask: '要把哪个收藏夹改叫什么名字？比如「把 学习 夹改名叫 工作」。' }
@@ -491,38 +523,11 @@ export async function assistantTurn(
     })
   }
 
-  if (action === 'modify') {
-    // 目标片段编号：通常 1 个；多取只改第一个（首版锁定单片段，改完看效果再扩展）
-    const dedup = mapValidIds(obj?.ids, candidates.length)
-    if (dedup.length === 0) {
-      return done('ask', { action: 'ask', text: '你想修改哪个片段？告诉我是第几个，比如「把第一个改成 xx」。', ids: [], note: '' })
-    }
-    const requirement = typeof obj?.requirement === 'string' && obj.requirement.trim() ? obj.requirement.trim() : ''
-    if (!requirement) {
-      return done('ask', { action: 'ask', text: '你想怎么改这个片段？说下具体需求，比如「改成支持 options 参数」。', ids: [], note: '' })
-    }
-    // 空泛需求本地兜底：只说"优化/改进/美化"没说清改成什么样 → 转 ask，别让模型臆测需求白跑一次慢修改。
-    // 词表刻意保守、限定长度，避免误杀"改成红色主题"这类短但具体的需求；与 prompt 规则双保险
-    const vagueWords = ['优化', '改进', '美化', '精简', '调整', '改一下', '优化一下', '改进一下', '美化一下', '精简一下', '修改代码', '改代码', '改好看点', '弄好看点', '改改']
-    if (vagueWords.includes(requirement) || (requirement.length <= 6 && vagueWords.some(w => requirement.startsWith(w)))) {
-      return done('ask', { action: 'ask', text: '你想把这段代码改成什么样？说下具体改法，比如「改成支持 options 参数」「精简成 20 行」。', ids: [], note: '' })
-    }
-    const note = typeof obj?.note === 'string' && obj.note.trim()
-      ? obj.note.trim()
-      : '以下是 AI 的建议改动，请确认后再保存。'
-    const replyText = typeof obj?.text === 'string' && obj.text.trim()
-      ? obj.text.trim()
-      : `好的，我来修改第 ${dedup[0]} 个片段，改完给你确认。`
-    return done('modify', {
-      action: 'modify',
-      text: replyText,
-      ids: dedup.map(n => candidates[n - 1].id),
-      note,
-      requirement
-    })
-  }
-
   if (action === 'operate') {
+    // 混合请求兜底：模型选 operate 说明用户主意图是库操作，若原文还含改代码意图则被丢弃 → 转分步
+    if (hasMixedIntent(message)) {
+      return done('ask', { action: 'ask', text: MODIFY_COMBO_ASK, ids: [], note: '' })
+    }
     // 复合操作：一次指令做多件事（建夹+放入、改名+收藏、移动等）→ 逐条校验，任一步不过转 ask 分步
     const rawOps = obj?.ops
     if (Array.isArray(rawOps) && rawOps.length > 0) {
@@ -558,6 +563,30 @@ export async function assistantTurn(
       return done('operate', { action: 'operate', text: '', ids: [], note, op })
     }
     const value = typeof obj?.value === 'string' && obj.value.trim() ? obj.value.trim() : ''
+    // 修改代码（op:'modify'，归入 operate 的单操作）：校验目标编号 + 具体需求；
+    // 空泛需求本地兜底：只说"优化/改进/美化"没说清改成什么样 → 转 ask，别让模型臆测需求白跑一次慢修改。
+    // 词表刻意保守、限定长度，避免误杀"改成红色主题"这类短但具体的需求；与 prompt 规则双保险
+    if (op === 'modify') {
+      const dedup = mapValidIds(obj?.ids, candidates.length)
+      if (dedup.length === 0) {
+        return done('ask', { action: 'ask', text: '你想修改哪个片段？告诉我是第几个，比如「把第一个改成 xx」。', ids: [], note: '' })
+      }
+      if (!value) {
+        return done('ask', { action: 'ask', text: '你想怎么改这个片段？说下具体需求，比如「改成支持 options 参数」。', ids: [], note: '' })
+      }
+      const vagueWords = ['优化', '改进', '美化', '精简', '调整', '改一下', '优化一下', '改进一下', '美化一下', '精简一下', '修改代码', '改代码', '改好看点', '弄好看点', '改改']
+      if (vagueWords.includes(value) || (value.length <= 6 && vagueWords.some(w => value.startsWith(w)))) {
+        return done('ask', { action: 'ask', text: '你想把这段代码改成什么样？说下具体改法，比如「改成支持 options 参数」「精简成 20 行」。', ids: [], note: '' })
+      }
+      return done('operate', {
+        action: 'operate',
+        text: '',
+        ids: dedup.map(n => candidates[n - 1].id),
+        note: note || '以下是 AI 的建议改动，请确认后再保存。',
+        op: 'modify',
+        value
+      })
+    }
     if (op === 'create') {
       if (!value) {
         return done('ask', { action: 'ask', text: '你想新建什么样的代码？说一下需求或标题，比如「新建一个防抖的片段」。', ids: [], note: '' })
