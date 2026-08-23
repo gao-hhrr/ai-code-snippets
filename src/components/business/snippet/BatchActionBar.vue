@@ -6,7 +6,6 @@ import { ref } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
 import FolderPicker from '@/components/business/folder/FolderPicker.vue'
 import ConfirmDialog from '@/components/global/feedback/ConfirmDialog.vue'
-import AppIcon from '@/components/global/base/AppIcon.vue'
 
 const snippetStore = useSnippetStore()
 

@@ -1,17 +1,25 @@
 <!-- ════════════════════════════════════════════════════════
-     views/ai-assistant/index.vue —— AI 助手页：对话式检索 + 5 工具库操作确认执行（KeepAlive 按组件名缓存）
+     views/ai-assistant/index.vue —— AI 助手页：对话流编排 + 结果/修改/确认卡渲染 + 用户确认落库
+     职责边界：本页是「编排器」——不发请求、不存状态，只做三件事：
+       ① 从 store 读 messages，按消息字段渲染成对话流（结果卡/修改卡/确认卡/思考折叠/分割线）
+       ② 把用户操作转发回 store（发送、确认、取消、替换、撤销、另存、导出）
+       ③ 唯一的改库落库出口：saveModifyToEditor / doReplace / doOperate 三条路径收敛于此
+     与 store 的分工：请求、状态机、落库逻辑全在 aiAssistantStore；本页只触发动作并等结果回显。
+     跨页契约：另存/新建都跳编辑页预填草稿，query 用 from=ai（create）/ from=ai-modify（modify），
+       编辑页据此选择回传函数（见 snippet-editor/index.vue）。
+     （KeepAlive 按组件名缓存，name 显式声明比依赖文件名推断可靠）
      ════════════════════════════════════════════════════════ -->
-<script lang="ts">
-// 显式声明组件名：App.vue 的 KeepAlive :include 按名字匹配，显式声明比依赖文件名推断更可靠
-export default { name: 'AiAssistantPage' }
-</script>
-
 <script setup lang="ts">
+// 显式声明组件名：App.vue 的 KeepAlive :include 按名字匹配。用 defineOptions（Vue 3.3+ 宏，编译期擦除）
+// 而非文件名推断——文件叫 index.vue，推断出来是 "Index" 匹配不上；也不为它单独开一个 <script> 块
+defineOptions({ name: 'AiAssistantPage' })
+
 import { ref, watch, computed, nextTick, onMounted, onActivated, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAiAssistantStore } from '@/stores/aiAssistantStore'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { useGoBack } from '@/composables/useGoBack'
+import { useScrollRestore } from '@/composables/useScrollRestore'
 import type { Snippet } from '@/types'
 import type { AssistantTurnMessage } from '@/api/ai'
 import MarkdownText from '@/components/global/content/MarkdownText.vue'
@@ -33,9 +41,13 @@ const { goBack } = useGoBack()
 const inputBar = ref<InstanceType<typeof ChatInputBar> | null>(null)
 const listEl = ref<HTMLElement | null>(null)
 
-// 按 AI 返回顺序取片段（snippetStore.snippets 是库内顺序，不能直接用）
+// 按 AI 返回顺序取片段（snippetStore.snippets 是库内顺序，不能直接用）。
+// 先建 Map 索引 O(1) 取，避免每个 id 都 filter 一遍库列表；filter 用类型守卫收窄掉 undefined
 function resultSnippets(all: Snippet[], ids: string[]): Snippet[] {
+  // 数组map生成 [id,片段] 二维数组；new Map构建id→片段的快速索引查表
   const map = new Map(all.map(s => [s.id, s]))
+  // 遍历AI的ids数组，顺序跟随ids；查找不到的id会得到undefined
+  // filter剔除undefined，同时TS类型守卫收窄类型，输出纯净Snippet数组
   return ids.map(id => map.get(id)).filter((s): s is Snippet => !!s)
 }
 
@@ -54,39 +66,19 @@ function prepareEntry() {
     }
   }
 }
-// 滚动位置存 sessionStorage（与编辑器草稿同策略）：返回/刷新不丢，关标签页自动清。
-// 保存点必须挂在 listEl 的 scroll 事件上：KeepAlive 失活时节点已先被移进隐藏容器，
-// onDeactivated 里读 scrollTop 恒为 0，会把真实值覆盖掉（此前刷新能用是 beforeunload 时机 DOM 还在）。
-// scroll 事件触发时元素仍在文档内，值可靠；恢复只在进入页面时做
-const SCROLL_KEY = 'code-snippets:ai-scroll'
-function saveScroll() {
-  try {
-    sessionStorage.setItem(SCROLL_KEY, String(listEl.value?.scrollTop ?? 0))
-  } catch { /* 忽略存储失败 */ }
-}
-function restoreScroll() {
-  let top = 0
-  try { top = Number(sessionStorage.getItem(SCROLL_KEY) || 0) } catch { /* 忽略 */ }
-  if (top > 0) {
-    // nextTick + rAF 等布局稳定后再定位，避免内容未渲染完导致 scrollTo 失效
-    nextTick(() => {
-      requestAnimationFrame(() => {
-        listEl.value?.scrollTo({ top })
-      })
-    })
-  }
-}
+// 滚动位置保存/恢复（sessionStorage 草稿策略 + scroll 事件保存点 + nextTick/rAF 双重等待）见 composables/useScrollRestore
+const { bindScroll, restoreScroll, unbindScroll } = useScrollRestore('code-snippets:ai-scroll', () => listEl.value)
+
 onMounted(() => {
   prepareEntry()
-  restoreScroll()
-  listEl.value?.addEventListener('scroll', saveScroll)
+  bindScroll()
 })
 onActivated(() => {
   prepareEntry()
   restoreScroll()
 })
 onBeforeUnmount(() => {
-  listEl.value?.removeEventListener('scroll', saveScroll)
+  unbindScroll()
 })
 
 // AI 修改的"替换原代码"二次确认（覆盖现有内容不可逆，弹框确认后才落库）
@@ -133,7 +125,12 @@ function doOperate() {
   if (confirmOpTarget.value) assistantStore.confirmOperate(confirmOpTarget.value)
   confirmOpTarget.value = null
 }
-// 双重确认对话框文案按操作分支：清空片段库 / 删除收藏夹 / 删除片段
+
+// 双重确认对话框文案按操作分支：清空片段库 / 删除收藏夹 / 删除片段。
+// 用 computed的理由：
+// 1.缓存，避免重复执行：模板多处读取，内部逻辑只执行一次，不会多次构造对象。
+// 2.自动收集响应式依赖：confirmOpTarget、片段总数变化，自动重新计算文案。
+// 用户从确认卡点确认时才 set 目标，computed 据此刻状态切换文案；空目标时兜底走"删除片段"
 const confirmOpDialog = computed(() => {
   const op = confirmOpTarget.value?.operateOp
   if (op === 'clear') {
@@ -153,7 +150,9 @@ function openSnippet(id: string) {
   router.push(`/snippet/${id}`)
 }
 
-// 新消息/发送中自动滚到底部
+// 新消息/发送中自动滚到底部：只监听 [messages.length, sending] 二元组——新消息 push 或进入发送态触发。
+// 故意不监听内容增量：SSE 流式输出时 content 持续变长，若监听它每写一个字就抢滚动，会和用户手动上翻打架。
+// 必须 nextTick 后再滚：刚 push 的消息尚未进 DOM，此刻 scrollHeight 还是旧值，立即 scrollTo 会停在半截
 watch(
   () => [assistantStore.messages.length, assistantStore.sending] as const,
   async () => {
@@ -262,6 +261,7 @@ watch(
       @confirm="doReplace"
     />
     <!-- AI 提议删除/清空/删除收藏夹的双重确认：不可逆操作，确认卡上再弹一道 -->
+     <!-- `!!` 转布尔值：有值 → `true` 弹窗显示；`null` → `false` 弹窗关闭。 -->
     <ConfirmDialog
       :show="!!confirmOpTarget"
       :title="confirmOpDialog.title"

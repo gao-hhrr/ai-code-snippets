@@ -2,9 +2,10 @@
      views/snippet-list/index.vue —— 片段列表页（网站主界面）：顶栏 + 站点导航 + 片段列表 + 批量操作
      ════════════════════════════════════════════════════════ -->
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useSnippetStore } from '@/stores/snippetStore'
+import { useScrollRestore } from '@/composables/useScrollRestore'
 import BrandMark from '@/components/global/layout/BrandMark.vue'
 import SiteNav from '@/components/business/snippet/SiteNav.vue'
 import ListToolbar from '@/components/business/snippet/ListToolbar.vue'
@@ -15,38 +16,16 @@ import AppIcon from '@/components/global/base/AppIcon.vue'
 
 const snippetStore = useSnippetStore()
 
-// 列表页滚动位置存 sessionStorage（与 AI 页/编辑器草稿同策略）：点卡片进详情、返回不丢位置，关标签页自动清。
-// 滚动容器是首页自己的 <main>（首页不在 KeepAlive，离开即销毁，恢复只在进入时做；
-// 不用 onBeforeUnmount 读 scrollTop 是它这时节点可能已脱离文档布局，值不可靠，同 AI 页 KeepAlive 的坑）
-const SCROLL_KEY = 'code-snippets:list-scroll'
+// 滚动位置保存/恢复（sessionStorage 草稿策略 + scroll 事件保存点 + nextTick/rAF 双重等待）见 composables/useScrollRestore。
+// 滚动容器是首页自己的 <main>（首页不在 KeepAlive，离开即销毁，恢复只在进入时做）
 const mainRef = ref<HTMLElement>()
-
-function saveScroll() {
-  try {
-    sessionStorage.setItem(SCROLL_KEY, String(mainRef.value?.scrollTop ?? 0))
-  } catch { /* 忽略存储失败 */ }
-}
-
-function restoreScroll() {
-  let top = 0
-  try { top = Number(sessionStorage.getItem(SCROLL_KEY) || 0) } catch { /* 忽略 */ }
-  if (top > 0) {
-    // nextTick + rAF 等布局稳定后再定位，避免内容未渲染完导致 scrollTo 失效
-    // 双重等待：Vue DOM更新完成 + 浏览器下一帧渲染完成
-    nextTick(() => {
-      requestAnimationFrame(() => {
-        mainRef.value?.scrollTo({ top })
-      })
-    })
-  }
-}
+const { bindScroll, unbindScroll } = useScrollRestore('code-snippets:list-scroll', () => mainRef.value)
 
 onMounted(() => {
-  restoreScroll()
-  mainRef.value?.addEventListener('scroll', saveScroll)
+  bindScroll()
 })
 onBeforeUnmount(() => {
-  mainRef.value?.removeEventListener('scroll', saveScroll)
+  unbindScroll()
 })
 
 // 离开列表页时清空选择，避免下次进入还停在批量状态
