@@ -16,14 +16,14 @@ export interface ChatMessage {
 
 // 进 prompt 的库片段子集（"给模型看的片段"）：从领域模型 Snippet 用ts内置工具类型 Pick 裁剪出模型做语义判断需要的字段。
 // id 用来回填真实片段，其余是内容与元信息；updatedAt 对"这段代码是干嘛的"判断无用，所以不带。
-// 本地召回（assistant.ts recallCandidates）与 prompt 组装（assistantPrompt.ts）都用这个形状。
+// 本地召回（assistant.ts recallCandidates）与 prompt 组装（prompt.ts）都用这个形状。
 export type SearchSnippet = Pick<Snippet, 'id' | 'title' | 'language' | 'code' | 'description' | 'folderIds' | 'createdAt'>
 
 // 进 prompt 的收藏夹子集：模型只按夹名指代收藏夹（"我收藏的""放进 常用 夹"），id 用于映射回真实夹
 export type SearchFolder = Pick<Folder, 'id' | 'name'>
 
 // 一条助手会话消息（store 里的对话记录，可持久化到 sessionStorage）。三类字段按注释分组：
-//   ① 对话本身（进 prompt）—— role / content / searchIds，assistantPrompt.ts 会再压成摘要给模型
+//   ① 对话本身（进 prompt）—— role / content / searchIds，prompt.ts 会再压成摘要给模型
 //   ② 展示用（仅 UI，不进 prompt）—— note / reasoning / thinkingSummary / divider
 //   ③ modify / operate 流程状态（仅流程驱动卡片，不进 prompt）—— 下方两个 `--- 块` 的字段
 export interface AssistantTurnMessage {
