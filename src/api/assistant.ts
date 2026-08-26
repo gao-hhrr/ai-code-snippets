@@ -1,28 +1,45 @@
 // ════════════════════════════════════════════════════════
-// api/assistant.ts —— AI 助手核心编排：召回候选 → 组装 prompt → 发请求 → 校验分发 → 归一动作
+// api/assistant.ts —— AI 助手编排主线：assistantTurn 决定"这一轮对话该干嘛"
 // ════════════════════════════════════════════════════════
-// 设计：不做意图解析、不做属性过滤。全库片段（标题/语言/AI 生成的人话描述/收藏夹/完整代码）
+
+// ┌─ 本文件在全项目的位置 ─────────────────────────────
+// store 的 send() 调用 assistantTurn() → 这里做出决策（search/summarize/operate/ask/chat）
+// → 返回 AssistantReply → store 按动作分发：
+//    · 普通库操作：本地执行（OPERATE_EXEC），不再发请求
+//    · create/modify：再发第二个请求（tasks.ts 的 generateCode/modifyCode）
+//    · 后台补思考总结：summarizeThinking()
+// 一句话：本文件是"AI 对话轮次的导演"，拍板之后真正干活的在别处。
+// └────────────────────────────────────────────────
+
+// ┌─ 设计哲学：不猜意图，让模型读内容 ─────────────────
+// 不做意图解析、不做属性过滤。全库片段（标题/语言/AI 生成的人话描述/收藏夹/完整代码）
 // 一次进 prompt，模型自主阅读内容决策：输出符合的编号、或澄清（ask）、或寒暄（chat）。
 // 本地只做数据准备（编号、字段拼装）与结果渲染——精确/相关的判断全部交给模型读内容。
 // 千奇百怪的表达（"防抖""看起来像随便写的""代码量最少的"）不需要枚举，模型自己读。
+// └────────────────────────────────────────────────
+
+// ┌─ 按职责拆出的兄弟模块：本文件只保留编排骨架 ──────
+//   recall.ts          —— 召回与解析：recallCandidates
+//   prompt.ts          —— prompt 组装：buildSystemPrompt / buildUserPrompt / buildSummaryPrompt
+//   tools.ts           —— function calling 工具注册：ASSISTANT_TOOLS
+//   operateMeta.ts     —— 操作分类元数据：OP_META / 推导常量 / matchOp
+//   operateValidate.ts —— 操作语义校验：validateOperateStep / 分步文案 / mapValidIds
+// 读法：assistantTurn 里 import 了谁，下一步就去读那个文件。
 // 规模边界：库 <50 条直接全量；上量后加一级召回缩小候选（assistantTurn 接口不变）。
-//
-// 按职责拆出的兄弟模块（各自头部注释含设计决策与实测坑）：
-//   operateMeta.ts     —— 操作分类元数据表（OP_META / 推导常量 / matchOp），13 种 op 的单一事实源
-//   tools.ts           —— 5 个 function calling 工具注册（ASSISTANT_TOOLS）
-//   operateValidate.ts —— 操作语义校验（validateOperateStep / 混合请求词表 / mapValidIds）
-//   recall.ts          —— 本地召回与解析（recallCandidates / tryExtractJSON）
-//   prompt.ts          —— prompt 组装（更早拆出，buildAssistantPrompt / buildSummaryPrompt）
-// 本文件只留：常量、诊断日志、重试包装、summarizeThinking（辅助）、assistantTurn（主流程）。
+// └────────────────────────────────────────────────
+
 import { chat } from './client'
 import { AIError, isAbortError } from './client'
 import type { ChatResult } from './client'
 import type { AssistantTurnMessage, AssistantReply, OperateStep, ChatMessage, SearchSnippet, SearchFolder } from './types'
-import { buildAssistantPrompt, buildSummaryPrompt } from './prompt'
+import { buildSystemPrompt, buildUserPrompt, buildSummaryPrompt } from './prompt'
 import { matchOp } from './operateMeta'
-import { validateOperateStep, mapValidIds, hasMixedIntent, CREATE_COMBO_ASK, MODIFY_COMBO_ASK } from './operateValidate'
-import { recallCandidates, tryExtractJSON } from './recall'
+import { validateOperateStep, mapValidIds, CREATE_COMBO_ASK } from './operateValidate'
+import { recallCandidates } from './recall'
 import { ASSISTANT_TOOLS } from './tools'
+
+// ════════ 一、成本 / 质量权衡常量 ════════
+// 三个都是"给多少 token / 多少候选"的预算开关——调大更准但更贵更慢，面试可讲取舍。
 
 // 推理模型 reasoning_content 与 content 共用 max_tokens 预算：超长推理会把 content 挤空。
 // 实测属性/对比类查询（"哪个代码量最少"）推理可到 3000-9000+ 字符，2000 时 content 挤空
@@ -34,7 +51,12 @@ const SNIPPET_CODE_LIMIT = 3000
 // （全量进 prompt 在库 100-200 条时会爆 DeepSeek 上下文窗口 + 成本/首字延迟翻倍）
 const RECALL_LIMIT = 25
 
+// 模型可能输出的五种动作：search / summarize / operate / ask / chat。
+// 本文件用它做"动作是否合法"的判定（isValidResult 与 action 归一化）。
+// as const: 给整个字面量加上 `readonly`,同时把类型收窄成字面量，而不是宽泛的 string/number
 const ACTIONS = ['search', 'summarize', 'operate', 'ask', 'chat'] as const
+
+// ════════ 二、本地辅助：诊断日志 + 重试包装 ════════
 
 // 每轮助手调用的本地诊断日志（localStorage 环形 100 条 + console）：记录候选数/prompt 大小/耗时/结果。
 // 调试者 F12 看 console，或读 localStorage 的 ai-call-log 复盘；Node 环境无 localStorage 时静默跳过。
@@ -59,12 +81,14 @@ function logAiCall(entry: Omit<AiCallLog, 't' | 'ms'> & { ms: number }) {
   } catch { /* 环境不支持时忽略 */ }
 }
 
-// 模型输出偶发无效（无工具调用 / content 空 / JSON 被截断）：校验函数检测到无有效输出时重试一次，
-// 仍失败则原样返回（上层有 ask 兜底）。带 tools：模型按 function calling 返回结构化工具调用。
+// 重试包装：模型输出偶发无效（无工具调用 / content 空 / JSON 被截断）时重试一次。
+// 只重试一次——污染有随机性，重试是"再给一次机会"，白烧成本有上限；
+// 仍失败则原样返回，由上层 ask 兜底，不在这里无限重试。
+// 调用方通过 isValid 判断结果是否有效：true = 正常可用；false = 输出无效需重试。
 async function chatRetryIfEmpty(
   messages: ChatMessage[],
   maxTokens: number,
-  isValid: (res: ChatResult) => boolean,
+  isValid: (res: ChatResult) => boolean, // 外部传入的校验回调
   signal?: AbortSignal,
   onRetry?: (attempt: number) => void,
   onReasoning?: (delta: string) => void,
@@ -75,14 +99,11 @@ async function chatRetryIfEmpty(
   return res
 }
 
-// ---------- 能力边界 ----------
-// 库操作（删除/重命名/收藏/导出/新建/清空）与代码生成已全部放行：AI 一律输出 operate 提议，
-// 由用户在看确认卡后手动确认，前端才真正落库。安全性不再靠本地物理拦截，而是靠「提议不执行 +
-// 确认卡分级确认」（删除弹确认框、清空加重警告）。
+// ════════ 三、辅助导出（不在主线）：思考过程二次总结 ════════
 
-// 思考过程二次总结（独立调用、非流式）：把模型自由推理的 reasoning_content 整理成固定四步文本
-// （① 分析请求 ② 梳理依据 ③ 解读意图 ④ 构思回应，每步一行），结果出来后折叠「AI 思考过程」展示。
-// 这是增值功能：失败/超时/思考太短一律返回 null，上层兜底展示原文，绝不影响主流程。
+// 把模型自由推理的 reasoning_content 整理成固定四步文本（① 分析请求 ② 梳理依据 ③ 解读意图 ④ 构思回应），
+// 结果出来后折叠「AI 思考过程」展示。这是增值功能：失败/超时/思考太短一律返回 null，
+// 上层兜底展示原文，绝不影响主流程。
 // 调用方：store 在消息 push 后后台补全（不阻塞主回复显示，见 backfillSummary）；assistantTurn 主流程不再调用。
 export async function summarizeThinking(
   reasoning: string,
@@ -100,8 +121,10 @@ export async function summarizeThinking(
   }
 }
 
-// 助手对话轮次：历史 + 当前消息 + 全库片段 → 模型一次调用完成
-// "动作判断 + 自主分析"——无任何本地过滤/排序逻辑
+// ════════ 四、主流程：assistantTurn（⭐ 顺着它读零件）════════
+// 一次完整决策：召回 → 组 prompt → 发请求 → 归一动作 → 五路分发。
+// 每个 import 来的函数都指向一个兄弟模块，见文件头"模块地图"。
+
 export async function assistantTurn(
   history: AssistantTurnMessage[],
   message: string,
@@ -110,44 +133,53 @@ export async function assistantTurn(
   opts: { signal?: AbortSignal; onRetry?: (attempt: number) => void; onReasoning?: (delta: string) => void; onChunk?: (delta: string) => void } = {}
 ): Promise<AssistantReply> {
   const startedAt = Date.now()
-  // 空库短路：没有任何片段时查找/分析都是空转，直接提示，不白跑模型
+
+  // ① 空库短路：没有任何片段时查找/分析都是空转，直接提示，不白跑模型
   if (snippets.length === 0) {
     logAiCall({ action: 'chat', candidates: 0, promptChars: 0, ms: Date.now() - startedAt })
     return { action: 'chat', text: '你的代码库还是空的——先在侧边栏点「新建片段」保存几段代码，我才能帮你查找和分析。', ids: [], note: '' }
   }
-  // 每个 return 出口统一记一条诊断日志，errCode 用于调试者定位
+
+  // 持久 system 层（角色/规则/示例/防注入声明）：跨轮复用，见 prompt.ts buildSystemPrompt
+  const system = buildSystemPrompt()
+
+  // 每个 return 出口统一记一条诊断日志（done 收口），errCode 用于调试者定位
   const done = (action: string, reply: AssistantReply, errCode?: string, errMsg?: string) => {
-    logAiCall({ action, candidates: candidates.length, promptChars: prompt.length, ms: Date.now() - startedAt, errCode, errMsg })
+    logAiCall({ action, candidates: candidates.length, promptChars: system.length + prompt.length, ms: Date.now() - startedAt, errCode, errMsg })
     return { ...reply }
   }
-  // 两级检索第一级：本地关键词召回候选集（编号只对应候选，返回时映射回真实 id）
+
+  // ② 第一级召回（recall.ts）：本地关键词缩小候选。编号只对应候选集，返回时映射回真实 id
   const candidates = recallCandidates(message, snippets, folders, history, RECALL_LIMIT)
-  // 候选多时压缩单条代码上限：全量 25 条 × 3000 字符 ≈ 7.5 万字符，长历史时逼近上下文/成本膨胀。
-  // 按候选数自适应（总代码量封顶约 SNIPPET_CODE_LIMIT×12），候选越多每条分得越少，库内代码总量有界。
+
+  // ③ 自适应代码压缩：候选多时压缩单条代码上限（总代码量封顶约 SNIPPET_CODE_LIMIT×12），
+  //    候选越多每条分得越少，库内代码总量有界——长历史时不逼近上下文/成本膨胀。
   const codeLimit = Math.min(SNIPPET_CODE_LIMIT, Math.max(800, Math.floor((SNIPPET_CODE_LIMIT * 12) / Math.max(candidates.length, 1))))
 
-  // 最近两轮搜索结果的候选编号并集：追问（"有注释的呢""更简单点的"）只能在这批编号里筛，
-  // 模型若不知道范围，会从候选里挑"更匹配"的其他片段（用户实测 bug）。换话题/新主题才可越界。
-  // 用最近两轮并集而非单轮：上一条若被收窄到极少数（如"有注释的呢"只剩 1 条），
-  // "更简单点的"这类反向调整会想回退到更早那轮的结果，单轮并集挡死、模型宁返回空（实测）。
+  // ④ 追问边界：最近两轮搜索结果的候选编号并集，prompt 规则限定模型只能在这批编号里筛。
+  //    为什么是两轮不是一轮：上一条若被收窄到极少数（"有注释的呢"只剩 1 条），
+  //    "更简单点的"这类反向调整想回退到更早那轮，单轮并集挡死、模型宁返回空（实测）。
   const lastSearches = history.filter(m => m.role === 'assistant' && m.searchIds && m.searchIds.length > 0).slice(-2)
   const lastSearchNums = [...new Set(
     lastSearches.flatMap(m => m.searchIds!.map(id => candidates.findIndex(c => c.id === id) + 1).filter(n => n > 0))
   )]
 
-  const prompt = buildAssistantPrompt({ candidates, snippets, folders, history, message, codeLimit, lastSearchNums })
+  // ⑤ 组 prompt（prompt.ts）：候选片段 + 历史 + 当前消息 + 边界 → 单条 user 消息
+  const prompt = buildUserPrompt({ candidates, snippets, folders, history, message, codeLimit, lastSearchNums })
 
-  // 合法响应：有已识别的工具调用，或 content 里能解析出合法动作 JSON（模型未走工具时的降级路径）
+  // 合法响应判定：只认已识别的工具调用。模型未走工具（content 直出）一律判无效 → 触发一次重试；
+  // 重试后仍无工具调用则上层兜底 ask。不再解析 content JSON——实测 22/22 轮模型稳定走工具（见 架构决策记录 D19）
   const isValidResult = (r: ChatResult) => {
     const tc = r.toolCalls?.[0]
-    if (tc && (ACTIONS as readonly string[]).includes(tc.name)) return true
-    const obj = tryExtractJSON(r.content)
-    return !!obj && (ACTIONS as readonly string[]).includes(String(obj.action))
+    return !!tc && (ACTIONS as readonly string[]).includes(tc.name)
   }
+
+  // ⑥ 发请求（client.ts 的 chat + tools.ts 的 ASSISTANT_TOOLS）：
+  //    无效输出自动重试一次；失败按"用户可操作"透传（503/上下文超限给具体文案，不吞成笼统错误）
   let result: ChatResult
   try {
     result = await chatRetryIfEmpty(
-      [{ role: 'user', content: prompt }],
+      [{ role: 'system', content: system }, { role: 'user', content: prompt }],
       ASSISTANT_MAX_TOKENS,
       isValidResult,
       opts.signal,
@@ -159,20 +191,20 @@ export async function assistantTurn(
     if (isAbortError(err)) throw err
     // chat 已抛出具体原因（503 过载/400 上下文超限等），透传给 UI 展示，不吞成笼统文案
     if (err instanceof AIError) {
-      logAiCall({ action: 'error', candidates: candidates.length, promptChars: prompt.length, ms: Date.now() - startedAt, errCode: err.code, errMsg: err.message })
+      logAiCall({ action: 'error', candidates: candidates.length, promptChars: system.length + prompt.length, ms: Date.now() - startedAt, errCode: err.code, errMsg: err.message })
       throw err
     }
-    logAiCall({ action: 'error', candidates: candidates.length, promptChars: prompt.length, ms: Date.now() - startedAt, errCode: 'ERR_FALLBACK', errMsg: String(err) })
+    logAiCall({ action: 'error', candidates: candidates.length, promptChars: system.length + prompt.length, ms: Date.now() - startedAt, errCode: 'ERR_FALLBACK', errMsg: String(err) })
     throw new AIError('AI 助手请求失败，请重试', 'ERR_FALLBACK')
   }
 
-  // 动作对象统一成 {action, ids, note, ...} 形状：优先取工具调用（name=动作、arguments=参数），
-  // 模型未走工具（content 直出 JSON）时降级用 tryExtractJSON。下方分发逻辑与之前完全一致。
+  // ⑦ 归一动作对象：统一成 {action, ids, note, ...} 形状。只取工具调用（name=动作、arguments=参数）；
+  //    没有工具调用时 obj 为空 → action 落 'ask'（上层兜底），不再降级解析 content
   const tc = result.toolCalls?.[0]
-  const obj: Record<string, unknown> = tc
-    ? { action: tc.name, ...tc.arguments }
-    : (tryExtractJSON(result.content) as Record<string, unknown> | null) || {}
+  const obj: Record<string, unknown> = tc ? { action: tc.name, ...tc.arguments } : {}
   const action = typeof obj.action === 'string' && (ACTIONS as readonly string[]).includes(obj.action) ? obj.action : 'ask'
+
+  // ════════ ⑧ 五路分发：把动作翻译成 AssistantReply ════════
 
   if (action === 'search') {
     // 编号 → 片段：去重、越界丢弃（编号对应候选集，映射回真实 id）
@@ -205,10 +237,8 @@ export async function assistantTurn(
   }
 
   if (action === 'operate') {
-    // 混合请求兜底：模型选 operate 说明用户主意图是库操作，若原文还含改代码意图则被丢弃 → 转分步
-    if (hasMixedIntent(message)) {
-      return done('ask', { action: 'ask', text: MODIFY_COMBO_ASK, ids: [], note: '' })
-    }
+    // operate 是"AI 提议、用户确认"的安全模型：这里只负责把模型意图翻译成校验过的操作，
+    // 真正落库要等用户在确认卡点头（见 store 的 confirmOperate / OPERATE_EXEC）。
     // 复合操作：一次指令做多件事（建夹+放入、改名+收藏、移动等）→ 逐条校验，任一步不过转 ask 分步
     const rawOps = obj?.ops
     if (Array.isArray(rawOps) && rawOps.length > 0) {
@@ -234,6 +264,7 @@ export async function assistantTurn(
         ops: steps
       })
     }
+    // 单操作路径
     const op = matchOp(obj?.op)
     if (!op) {
       return done('ask', { action: 'ask', text: '我没太理解你想做什么操作，请说清楚，比如「把第一个删了」「收藏到默认收藏」。', ids: [], note: '' })
@@ -244,9 +275,8 @@ export async function assistantTurn(
       return done('operate', { action: 'operate', text: '', ids: [], note, op })
     }
     const value = typeof obj?.value === 'string' && obj.value.trim() ? obj.value.trim() : ''
-    // 修改代码（op:'modify'，归入 operate 的单操作）：校验目标编号 + 具体需求；
-    // 空泛需求本地兜底：只说"优化/改进/美化"没说清改成什么样 → 转 ask，别让模型臆测需求白跑一次慢修改。
-    // 词表刻意保守、限定长度，避免误杀"改成红色主题"这类短但具体的需求；与 prompt 规则双保险
+    // modify：只校验目标编号 + 需求非空。空泛需求（「优化一下」没说清改成什么样）交给 prompt 规则压，
+    // 不再本地词表拦截——实测词表对模型的臆测输出（长文本自编方案）命中率 0（见 架构决策记录 D18）
     if (op === 'modify') {
       const dedup = mapValidIds(obj?.ids, candidates.length)
       if (dedup.length === 0) {
@@ -254,10 +284,6 @@ export async function assistantTurn(
       }
       if (!value) {
         return done('ask', { action: 'ask', text: '你想怎么改这个片段？说下具体需求，比如「改成支持 options 参数」。', ids: [], note: '' })
-      }
-      const vagueWords = ['优化', '改进', '美化', '精简', '调整', '改一下', '优化一下', '改进一下', '美化一下', '精简一下', '修改代码', '改代码', '改好看点', '弄好看点', '改改']
-      if (vagueWords.includes(value) || (value.length <= 6 && vagueWords.some(w => value.startsWith(w)))) {
-        return done('ask', { action: 'ask', text: '你想把这段代码改成什么样？说下具体改法，比如「改成支持 options 参数」「精简成 20 行」。', ids: [], note: '' })
       }
       return done('operate', {
         action: 'operate',
@@ -268,6 +294,7 @@ export async function assistantTurn(
         value
       })
     }
+    // create：生成式操作，先校验需求文本，真正的代码生成由 store 发起第二个请求（tasks.ts）
     if (op === 'create') {
       if (!value) {
         return done('ask', { action: 'ask', text: '你想新建什么样的代码？说一下需求或标题，比如「新建一个防抖的片段」。', ids: [], note: '' })
@@ -301,6 +328,7 @@ export async function assistantTurn(
       }
       return done('operate', { action: 'operate', text: '', ids: dedup.slice(0, 1).map(n => candidates[n - 1].id), note, op, value, field })
     }
+    // 片段操作兜底（rename/export/favorite/unfavorite）：需要目标编号 + 部分需要新值
     const dedup = mapValidIds(obj?.ids, candidates.length)
     if (dedup.length === 0) {
       return done('ask', { action: 'ask', text: '你想操作哪个片段？告诉我是第几个，比如「把第一个删了」。', ids: [], note: '' })
@@ -320,10 +348,12 @@ export async function assistantTurn(
   }
 
   if (action === 'ask') {
+    // 意图模糊/缺参数时澄清：问清要找什么，而不是瞎猜
     const question = typeof obj?.question === 'string' && obj.question.trim() ? obj.question.trim() : '没太听懂你想找什么，能再说得具体一点吗？'
     return done('ask', { action: 'ask', text: question, ids: [], note: '' })
   }
 
+  // chat：与找片段无关的寒暄，简短回复即可
   const reply = typeof obj?.reply === 'string' && obj.reply.trim() ? obj.reply.trim() : '我在的，跟我说说你想找什么代码片段吧。'
   return done('chat', { action: 'chat', text: reply, ids: [], note: '' })
 }

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════
-// api/operateValidate.ts —— 操作语义校验：复合单步校验 + 混合请求词表 + 编号映射（从 assistant.ts 拆出）
+// api/operateValidate.ts —— 操作语义校验：复合单步校验 + 分步引导文案 + 编号映射（从 assistant.ts 拆出）
 // ════════════════════════════════════════════════════════
 // API 协议只保证模型输出是合法 JSON，语义正确性（op 合法 / 参数齐全 / 编号不越界）靠本文件兜底：
 //   任一步校验不过 → 整组转 ask 分步，避免「建夹了但片段没放进去」这类部分执行。
@@ -14,21 +14,9 @@ export const CREATE_COMBO_ASK = '新建代码需要先进入编辑页确认保�
 
 // 修改代码 + 库操作混合请求（"把第 1 个改成 xx，顺便放进新建的 常用 夹"）引导文案：
 // 与 CREATE_COMBO_ASK 同模式——modify 是生成式操作（流式生成+diff 审阅）、库操作是声明式，两类无法一组落地。
-// 双保险：模型把 modify 混进 ops → NON_COMPOSABLE_OPS 整组拒转 ask；模型只挑单 op（丢弃另一半）→ hasMixedIntent 兜底。
+// 触发路径：modify 混进 ops → validateOperateStep 经 NON_COMPOSABLE_OPS 整组拒转本文案；
+// 模型自主处理混合请求时走 ask 分步（实测 4/4，2026-08-26；hasMixedIntent 词表兜底已删）。
 export const MODIFY_COMBO_ASK = '修改代码和收藏夹等库操作不能一步完成。建议分两步：先单独说「把要改的片段改成 xx」，确认保存好改动；再对我说「新建收藏夹 xx，把刚才的放进去」，我一步完成。'
-
-// 混合请求本地兜底词表：模型已选 operate 时，检测用户原文是否同时含"改代码"与"库操作"意图，
-// 命中说明另一半被静默丢弃 → 转 MODIFY_COMBO_ASK 分步。词表刻意保守，两处注意：
-// ①「改名/重命名/改描述/改语言」是库操作（模型该走 operate），不能进 MODIFY_WORDS，否则"改名并收藏"这类
-//   纯声明式复合会被误杀；
-// ② 不用裸"修改/优化"——作名词/过去指代太常见（实测"新建收藏夹，把刚才修改的代码放进去"被误伤成混合请求），
-//   只收主动改代码短语（改成/改一下/帮我改/修改成/优化一下…）。
-// 宁可漏杀（漏了还有 prompt 规则 + validateOperateStep 双保险）也不误伤正常复合操作。
-const MODIFY_WORDS = ['改成', '改一下', '改改', '帮我改', '给我改', '修改成', '修改一下', '帮我修改', '优化一下', '优化下', '重写', '重构', '换成', '精简', '美化']
-const LIB_OP_WORDS = ['收藏', '新建', '放入', '放进', '夹', '重命名', '改名', '导出', '删除', '清空', '移动']
-export function hasMixedIntent(message: string): boolean {
-  return MODIFY_WORDS.some(w => message.includes(w)) && LIB_OP_WORDS.some(w => message.includes(w))
-}
 
 // 模型输出编号 → 候选下标：去重、丢弃越界/非整数（编号对应候选集，返回时映射回真实 id）。
 // 各处动作（search/summarize 与 operate 各 op 的目标片段）共用同一套编号校验。

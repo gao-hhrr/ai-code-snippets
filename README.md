@@ -80,7 +80,7 @@ src/
 │   ├── business/           # snippet 片段 / folder 收藏夹 / assistant AI 助手零件
 │   └── editor/             # Monaco 封装：MonacoEditor / DiffView / monaco.ts（裁剪入口）
 ├── stores/                 # Pinia：snippetStore（片段+收藏夹，watch 自动持久化）/ aiAssistantStore
-├── api/                    # AI 调用层（唯一 AI 入口）：client SSE / tasks 任务 / assistant 工具分发
+├── api/                    # AI 调用层（唯一 AI 入口）：assistant 编排 · client SSE · tasks 任务 · prompt/operate/recall/tools 拆分
 ├── composables/            # useDraft / useMonacoAsync / useClickOutside / useEscape / useGoBack
 ├── services/               # 纯 TS 不依赖 Vue：storage / seed / languages / sort / file / date
 ├── types/                  # 领域类型（Snippet / Folder）

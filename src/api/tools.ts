@@ -2,7 +2,7 @@
 // api/tools.ts —— function calling 工具注册：5 个动作各一个 tool（从 assistant.ts 拆出）
 // ════════════════════════════════════════════════════════
 // 模型「选工具」代替「写 action 字段」。parameters 是 JSON Schema，
-// 模型产出的 arguments 由 API 协议保证为合法 JSON——替代手写 tryExtractJSON（截断/嵌套/转义不再怕）。
+// 模型产出的 arguments 由 API 协议保证为合法 JSON——不依赖手写 JSON 提取（截断/嵌套/转义不再怕）。
 // 行为规则（追问范围、否定查询、组合约束、能力边界）仍写在 prompt 里（prompt.ts），Schema 只负责形状。
 import type { ChatTool } from './client'
 import { VALID_OPS } from './operateMeta'

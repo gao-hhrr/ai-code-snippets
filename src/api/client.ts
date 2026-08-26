@@ -139,7 +139,7 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
           stream: !!(options.onChunk || options.onReasoning),
           messages: options.messages,
           // 注册了工具就带 tools；tool_choice:'auto' 让模型优先走结构化工具调用，
-          // 不走工具时 content 直出 JSON 由调用方降级解析（DeepSeek 对 'required' 支持不如 'auto' 稳）
+          // 模型不走工具时 content 直出，由调用方判无效 → 重试一次兜底（DeepSeek 对 'required' 支持不如 'auto' 稳）
           ...(options.tools?.length ? { tools: options.tools, tool_choice: 'auto' } : {}),
           // 深度思考开关：false 时显式禁用推理（v4 系列支持，实测无 thinking 输出、content 直出）
           ...(options.thinking === false ? { thinking: { type: 'disabled' } } : {}),
