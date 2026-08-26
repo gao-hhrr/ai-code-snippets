@@ -41,15 +41,20 @@ import { ASSISTANT_TOOLS } from './tools'
 // ════════ 一、成本 / 质量权衡常量 ════════
 // 三个都是"给多少 token / 多少候选"的预算开关——调大更准但更贵更慢，面试可讲取舍。
 
-// 推理模型 reasoning_content 与 content 共用 max_tokens 预算：超长推理会把 content 挤空。
-// 实测属性/对比类查询（"哪个代码量最少"）推理可到 3000-9000+ 字符，2000 时 content 挤空
-// → JSON 解析失败 → 兜底 ask"没听明白"；4000 下正常返回。代价：仅超长推理的病理查询多烧输出 token。
-const ASSISTANT_MAX_TOKENS = 4000
-// 每条代码进 prompt 的长度上限：防御超长片段撑爆上下文（正常片段全量可见）
+// 推理模型 reasoning_content 与 content 共用 max_tokens 预算。实测（2026-08-27，真实模型 6 轮）：
+// 主流程 D19 后只认 tool_calls——content 恒为 0、reasoning 仅 100-400 字符，completion 普遍 <1300 token，
+// 4000 是旧架构（content 直出 JSON）时代的过剩防线。放开到 8192（DeepSeek 上限）：正常/病理查询成本不变
+// （模型写多少按多少计费，上限只是允许的最大值），仅消除极端超长输出的截断可能。
+const ASSISTANT_MAX_TOKENS = 8192
+// 单条代码进 prompt 的长度上限：正常片段全量可见，超长片段截断
 const SNIPPET_CODE_LIMIT = 3000
-// 两级检索的候选上限：第一级本地关键词召回 Top N 进 prompt，成本与库规模解耦
-// （全量进 prompt 在库 100-200 条时会爆 DeepSeek 上下文窗口 + 成本/首字延迟翻倍）
+// 两级检索的候选上限：第一级本地关键词召回 Top N 进 prompt，成本与首字延迟解耦于库规模
+// （不因避爆而设——deepseek-v4-flash 上下文 1M，全量直进实测约 1000 条才触顶；召回为省钱省延迟）
 const RECALL_LIMIT = 25
+// 自适应代码压缩：总码量预算在候选间均分，单条下限保证每条可读
+// （实测 2026-08-26：75000 预算下 N=25 时单条 3000 全量可见，深度特征（>1440 字符）搜索 0/3 → 3/3）
+const TOTAL_CODE_BUDGET = 75000
+const MIN_CODE_FLOOR = 800
 
 // 模型可能输出的五种动作：search / summarize / operate / ask / chat。
 // 本文件用它做"动作是否合法"的判定（isValidResult 与 action 归一化）。
@@ -152,14 +157,15 @@ export async function assistantTurn(
   // ② 第一级召回（recall.ts）：本地关键词缩小候选。编号只对应候选集，返回时映射回真实 id
   const candidates = recallCandidates(message, snippets, folders, history, RECALL_LIMIT)
 
-  // ③ 自适应代码压缩：候选多时压缩单条代码上限（总代码量封顶约 SNIPPET_CODE_LIMIT×12），
-  //    候选越多每条分得越少，库内代码总量有界——长历史时不逼近上下文/成本膨胀。
-  const codeLimit = Math.min(SNIPPET_CODE_LIMIT, Math.max(800, Math.floor((SNIPPET_CODE_LIMIT * 12) / Math.max(candidates.length, 1))))
+  // ③ 自适应代码压缩：候选越多每条分得越少。总码量预算在候选间均分（N≤25 时单条 3000 不截断）；
+  //    N>预算/下限 时卡 MIN_CODE_FLOOR，总码量按 下限×N 线性涨（不是封顶）。
+  const codeLimit = Math.min(SNIPPET_CODE_LIMIT, Math.max(MIN_CODE_FLOOR, Math.floor(TOTAL_CODE_BUDGET / Math.max(candidates.length, 1))))
 
-  // ④ 追问边界：最近两轮搜索结果的候选编号并集，prompt 规则限定模型只能在这批编号里筛。
-  //    为什么是两轮不是一轮：上一条若被收窄到极少数（"有注释的呢"只剩 1 条），
-  //    "更简单点的"这类反向调整想回退到更早那轮，单轮并集挡死、模型宁返回空（实测）。
-  const lastSearches = history.filter(m => m.role === 'assistant' && m.searchIds && m.searchIds.length > 0).slice(-2)
+  // ④ 追问边界：整场会话搜索结果的候选编号并集，prompt 规则限定模型只能在这批编号里筛。
+  //    为什么全量不是两轮：候选集已含整场所有历史搜索片段（recall 的 histSnippets 全量收集，优先级最高），
+  //    边界只放最近两轮会挡死跨轮回退（"把最开始那个防抖的改一下"）——模型看得到却禁止返回（实测单轮并集已挡死反向调整）。
+  //    映射只保留本轮候选里存在的编号（findIndex 过滤）：被 RECALL_LIMIT=25 截断的旧片段自动丢弃，防幻觉不破。
+  const lastSearches = history.filter(m => m.role === 'assistant' && m.searchIds && m.searchIds.length > 0)
   const lastSearchNums = [...new Set(
     lastSearches.flatMap(m => m.searchIds!.map(id => candidates.findIndex(c => c.id === id) + 1).filter(n => n > 0))
   )]
