@@ -49,7 +49,8 @@ export function describeAIError(status: number, detail: string): { code: AIError
   return { code: 'ERR_API', message: `AI 请求失败（${status}）：${detail}` }
 }
 
-// 本地开发直连 DeepSeek（key 取自本地 .env 的 VITE_AI_API_KEY，仅限本地使用）
+// 本地开发直连 DeepSeek（key 取本地 .env 的 VITE_AI_API_KEY，仅限本地）；
+// 生产由服务端代理转发，key 不落前端（见面试备战记录 Q5）
 const AI_API_URL = 'https://api.deepseek.com/chat/completions'
 const AI_API_KEY = import.meta.env.VITE_AI_API_KEY || ''
 const AI_MODEL = import.meta.env.VITE_AI_MODEL || 'deepseek-v4-flash'

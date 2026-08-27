@@ -32,7 +32,7 @@ export const useSnippetStore = defineStore('snippet', () => {
   // --- 筛选 / 排序条件：会话内状态，不持久化 ---
   const searchQuery = ref('')
   const filterType = ref<FilterType>('all')
-  const filterValue = ref('')//对应筛选条件的值
+  const filterValue = ref('')
   // 排序不持久化：每次进入页面默认「最近更新 ↓」，会话内切换即时生效
   const sortBy = ref<SortBy>('updated')
   const sortDir = ref<SortDir>('desc')
@@ -145,31 +145,26 @@ export const useSnippetStore = defineStore('snippet', () => {
   // 保存后异步补全 description，作为 AI 检索的语义依据；描述为空才生成、失败保持空串、UI 提供重试
   const generatingDescriptionIds = ref<string[]>([])
 
-  //判断是否正在生成
   function isGeneratingDescription(id: string) {
     return generatingDescriptionIds.value.includes(id)
   }
 
   async function ensureDescription(id: string) {
     const s = snippets.value.find(x => x.id === id)
-    // 片段不存在 ,已经有description不需要再生成 ,正在生成中，防止重复调用
+    // 片段不存在 / 已有描述 / 生成中 → 跳过（防重复调用）
     if (!s || s.description || isGeneratingDescription(id)) return
-    //标记为「生成中」，加入队列
     generatingDescriptionIds.value.push(id)
     try {
-      //调用AI生成方法，传入标题、代码、语言，去除首尾空格
       const desc = (await generateDescription(s.title, s.code, s.language)).trim()
-      //二次查找最新数据（关键容错）
+      // 写入前二次校验：生成期间片段可能被删、用户可能已手动填描述
       const current = snippets.value.find(x => x.id === id)
-      // 生成期间片段可能被删除；用户可能在生成完成前手动填了描述
-      //校验：片段还存在 && 目前依旧没有描述 && AI返回了有效内容
       if (current && !current.description && desc) {
         current.description = desc
       }
     } catch {
-      //AI接口报错、网络异常，直接吞掉错误，不抛出弹窗影响
+      // 静默：AI 接口报错不弹窗打断
     } finally {
-      //无论成功/失败/报错，都移除loading标记
+      // 无论成败都移除「生成中」标记
       generatingDescriptionIds.value = generatingDescriptionIds.value.filter(x => x !== id)
     }
   }
@@ -235,7 +230,7 @@ export const useSnippetStore = defineStore('snippet', () => {
   function toggleSelect(id: string) {
     selectedIds.value = selectedIds.value.includes(id)
       ? selectedIds.value.filter(x => x !== id)
-      : [...selectedIds.value, id]//展开数组追加id
+      : [...selectedIds.value, id]
   }
 
   function selectAll(ids: string[]) {

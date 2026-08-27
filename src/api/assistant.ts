@@ -4,18 +4,13 @@
 
 // ┌─ 本文件在全项目的位置 ─────────────────────────────
 // store 的 send() 调用 assistantTurn() → 这里做出决策（search/summarize/operate/ask/chat）
-// → 返回 AssistantReply → store 按动作分发：
-//    · 普通库操作：本地执行（OPERATE_EXEC），不再发请求
-//    · create/modify：再发第二个请求（tasks.ts 的 generateCode/modifyCode）
-//    · 后台补思考总结：summarizeThinking()
-// 一句话：本文件是"AI 对话轮次的导演"，拍板之后真正干活的在别处。
+// → 返回 AssistantReply → store 按动作分发：普通操作本地执行、create/modify 再发第二个请求
+// （tasks.ts）、后台补思考总结（summarizeThinking）。本文件是"AI 对话轮次的导演"。
 // └────────────────────────────────────────────────
 
 // ┌─ 设计哲学：不猜意图，让模型读内容 ─────────────────
-// 不做意图解析、不做属性过滤。全库片段（标题/语言/AI 生成的人话描述/收藏夹/完整代码）
-// 一次进 prompt，模型自主阅读内容决策：输出符合的编号、或澄清（ask）、或寒暄（chat）。
-// 本地只做数据准备（编号、字段拼装）与结果渲染——精确/相关的判断全部交给模型读内容。
-// 千奇百怪的表达（"防抖""看起来像随便写的""代码量最少的"）不需要枚举，模型自己读。
+// 不做意图解析/属性过滤。全库片段一次进 prompt，模型自主阅读决策：输出编号、或 ask 澄清、或 chat 寒暄。
+// 本地只做数据准备与结果渲染——千奇百怪的表达（"防抖""代码量最少的"）不需要枚举，模型自己读。
 // └────────────────────────────────────────────────
 
 // ┌─ 按职责拆出的兄弟模块：本文件只保留编排骨架 ──────
@@ -25,7 +20,8 @@
 //   operateMeta.ts     —— 操作分类元数据：OP_META / 推导常量 / matchOp
 //   operateValidate.ts —— 操作语义校验：validateOperateStep / 分步文案 / mapValidIds
 // 读法：assistantTurn 里 import 了谁，下一步就去读那个文件。
-// 规模边界：库 <50 条直接全量；上量后加一级召回缩小候选（assistantTurn 接口不变）。
+// 规模边界：候选经 recallCandidates 两级检索（第一级本地关键词召回 Top N → 第二级模型读全量候选内容）进 prompt；
+// 库上量后第一级平滑升级混合检索（assistantTurn 接口不变）。
 // └────────────────────────────────────────────────
 
 import { chat } from './client'
@@ -41,30 +37,26 @@ import { ASSISTANT_TOOLS } from './tools'
 // ════════ 一、成本 / 质量权衡常量 ════════
 // 三个都是"给多少 token / 多少候选"的预算开关——调大更准但更贵更慢，面试可讲取舍。
 
-// 推理模型 reasoning_content 与 content 共用 max_tokens 预算。实测（2026-08-27，真实模型 6 轮）：
-// 主流程 D19 后只认 tool_calls——content 恒为 0、reasoning 仅 100-400 字符，completion 普遍 <1300 token，
-// 4000 是旧架构（content 直出 JSON）时代的过剩防线。放开到 8192（DeepSeek 上限）：正常/病理查询成本不变
-// （模型写多少按多少计费，上限只是允许的最大值），仅消除极端超长输出的截断可能。
+// 推理模型 reasoning 与 content 共用 max_tokens。D19 后主流程 content 恒为 0（completion <1300 token），
+// 放开到上限 8192 成本不变（按实际输出计费），仅消除极端超长输出的截断可能（见 架构决策记录 D22）
 const ASSISTANT_MAX_TOKENS = 8192
 // 单条代码进 prompt 的长度上限：正常片段全量可见，超长片段截断
 const SNIPPET_CODE_LIMIT = 3000
-// 两级检索的候选上限：第一级本地关键词召回 Top N 进 prompt，成本与首字延迟解耦于库规模
-// （不因避爆而设——deepseek-v4-flash 上下文 1M，全量直进实测约 1000 条才触顶；召回为省钱省延迟）
+// 两级检索的候选上限：第一级本地关键词召回 Top N 进 prompt，成本/延迟解耦于库规模。
+// 不因避爆而设——上下文 1M 全量实测约 1000 条才触顶；召回为省钱省延迟
 const RECALL_LIMIT = 25
 // 自适应代码压缩：总码量预算在候选间均分，单条下限保证每条可读
 // （实测 2026-08-26：75000 预算下 N=25 时单条 3000 全量可见，深度特征（>1440 字符）搜索 0/3 → 3/3）
 const TOTAL_CODE_BUDGET = 75000
 const MIN_CODE_FLOOR = 800
 
-// 模型可能输出的五种动作：search / summarize / operate / ask / chat。
-// 本文件用它做"动作是否合法"的判定（isValidResult 与 action 归一化）。
-// as const: 给整个字面量加上 `readonly`,同时把类型收窄成字面量，而不是宽泛的 string/number
+// 模型可能输出的五种动作：本文件用它做"动作是否合法"判定（isValidResult 与 action 归一化）。
+// as const 收窄成字面量类型，避免误当宽泛 string 用
 const ACTIONS = ['search', 'summarize', 'operate', 'ask', 'chat'] as const
 
 // ════════ 二、本地辅助：诊断日志 + 重试包装 ════════
 
-// 每轮助手调用的本地诊断日志（localStorage 环形 100 条 + console）：记录候选数/prompt 大小/耗时/结果。
-// 调试者 F12 看 console，或读 localStorage 的 ai-call-log 复盘；Node 环境无 localStorage 时静默跳过。
+// 每轮调用的本地诊断日志（localStorage 环形 100 条 + console；Node 无 localStorage 时静默跳过）
 interface AiCallLog {
   t: string
   action: string
@@ -86,14 +78,12 @@ function logAiCall(entry: Omit<AiCallLog, 't' | 'ms'> & { ms: number }) {
   } catch { /* 环境不支持时忽略 */ }
 }
 
-// 重试包装：模型输出偶发无效（无工具调用 / content 空 / JSON 被截断）时重试一次。
-// 只重试一次——污染有随机性，重试是"再给一次机会"，白烧成本有上限；
-// 仍失败则原样返回，由上层 ask 兜底，不在这里无限重试。
-// 调用方通过 isValid 判断结果是否有效：true = 正常可用；false = 输出无效需重试。
+// 重试包装：模型输出偶发无效（无工具调用 / content 空 / JSON 截断）时重试一次——
+// 污染有随机性，只给一次机会（白烧成本有上限），仍失败由上层 ask 兜底
 async function chatRetryIfEmpty(
   messages: ChatMessage[],
   maxTokens: number,
-  isValid: (res: ChatResult) => boolean, // 外部传入的校验回调
+  isValid: (res: ChatResult) => boolean,
   signal?: AbortSignal,
   onRetry?: (attempt: number) => void,
   onReasoning?: (delta: string) => void,
@@ -106,10 +96,8 @@ async function chatRetryIfEmpty(
 
 // ════════ 三、辅助导出（不在主线）：思考过程二次总结 ════════
 
-// 把模型自由推理的 reasoning_content 整理成固定四步文本（① 分析请求 ② 梳理依据 ③ 解读意图 ④ 构思回应），
-// 结果出来后折叠「AI 思考过程」展示。这是增值功能：失败/超时/思考太短一律返回 null，
-// 上层兜底展示原文，绝不影响主流程。
-// 调用方：store 在消息 push 后后台补全（不阻塞主回复显示，见 backfillSummary）；assistantTurn 主流程不再调用。
+// 把自由推理的 reasoning_content 整理成固定四步文本（① 分析请求 ② 梳理依据 ③ 解读意图 ④ 构思回应），
+// 结果出来后折叠「AI 思考过程」展示。增值功能：失败/超时/思考太短返回 null，上层兜底原文，绝不影响主流程
 export async function summarizeThinking(
   reasoning: string,
   opts: { signal?: AbortSignal } = {}
@@ -127,8 +115,7 @@ export async function summarizeThinking(
 }
 
 // ════════ 四、主流程：assistantTurn（⭐ 顺着它读零件）════════
-// 一次完整决策：召回 → 组 prompt → 发请求 → 归一动作 → 五路分发。
-// 每个 import 来的函数都指向一个兄弟模块，见文件头"模块地图"。
+// 一次完整决策：召回 → 组 prompt → 发请求 → 归一动作 → 五路分发。零件在兄弟模块，见文件头地图。
 
 export async function assistantTurn(
   history: AssistantTurnMessage[],
@@ -157,14 +144,13 @@ export async function assistantTurn(
   // ② 第一级召回（recall.ts）：本地关键词缩小候选。编号只对应候选集，返回时映射回真实 id
   const candidates = recallCandidates(message, snippets, folders, history, RECALL_LIMIT)
 
-  // ③ 自适应代码压缩：候选越多每条分得越少。总码量预算在候选间均分（N≤25 时单条 3000 不截断）；
-  //    N>预算/下限 时卡 MIN_CODE_FLOOR，总码量按 下限×N 线性涨（不是封顶）。
+  // ③ 自适应代码压缩：总码量预算在候选间均分（N≤25 单条 3000 不截断），
+  //    超预算时卡 MIN_CODE_FLOOR，总码量按 下限×N 线性涨（不封顶）
   const codeLimit = Math.min(SNIPPET_CODE_LIMIT, Math.max(MIN_CODE_FLOOR, Math.floor(TOTAL_CODE_BUDGET / Math.max(candidates.length, 1))))
 
-  // ④ 追问边界：整场会话搜索结果的候选编号并集，prompt 规则限定模型只能在这批编号里筛。
-  //    为什么全量不是两轮：候选集已含整场所有历史搜索片段（recall 的 histSnippets 全量收集，优先级最高），
-  //    边界只放最近两轮会挡死跨轮回退（"把最开始那个防抖的改一下"）——模型看得到却禁止返回（实测单轮并集已挡死反向调整）。
-  //    映射只保留本轮候选里存在的编号（findIndex 过滤）：被 RECALL_LIMIT=25 截断的旧片段自动丢弃，防幻觉不破。
+  // ④ 追问边界：整场会话搜索结果的候选编号并集。为什么全量不是两轮：候选集已含整场历史片段
+  //    （recall histSnippets 全量收集），边界只放两轮会挡死跨轮回退（"把最开始那个防抖的改一下"）。
+  //    映射只保留本轮候选里存在的编号：被 RECALL_LIMIT 截断的旧片段自动丢弃，防幻觉不破
   const lastSearches = history.filter(m => m.role === 'assistant' && m.searchIds && m.searchIds.length > 0)
   const lastSearchNums = [...new Set(
     lastSearches.flatMap(m => m.searchIds!.map(id => candidates.findIndex(c => c.id === id) + 1).filter(n => n > 0))
@@ -173,8 +159,8 @@ export async function assistantTurn(
   // ⑤ 组 prompt（prompt.ts）：候选片段 + 历史 + 当前消息 + 边界 → 单条 user 消息
   const prompt = buildUserPrompt({ candidates, snippets, folders, history, message, codeLimit, lastSearchNums })
 
-  // 合法响应判定：只认已识别的工具调用。模型未走工具（content 直出）一律判无效 → 触发一次重试；
-  // 重试后仍无工具调用则上层兜底 ask。不再解析 content JSON——实测 22/22 轮模型稳定走工具（见 架构决策记录 D19）
+  // 合法响应判定：只认已识别的工具调用，未走工具一律判无效重试；不再解析 content JSON
+  // （实测 22/22 轮模型稳定走工具，见 架构决策记录 D19）
   const isValidResult = (r: ChatResult) => {
     const tc = r.toolCalls?.[0]
     return !!tc && (ACTIONS as readonly string[]).includes(tc.name)
@@ -204,8 +190,7 @@ export async function assistantTurn(
     throw new AIError('AI 助手请求失败，请重试', 'ERR_FALLBACK')
   }
 
-  // ⑦ 归一动作对象：统一成 {action, ids, note, ...} 形状。只取工具调用（name=动作、arguments=参数）；
-  //    没有工具调用时 obj 为空 → action 落 'ask'（上层兜底），不再降级解析 content
+  // ⑦ 归一动作对象：只取工具调用（name=动作、arguments=参数）；没有工具调用时落 'ask' 兜底
   const tc = result.toolCalls?.[0]
   const obj: Record<string, unknown> = tc ? { action: tc.name, ...tc.arguments } : {}
   const action = typeof obj.action === 'string' && (ACTIONS as readonly string[]).includes(obj.action) ? obj.action : 'ask'
@@ -243,14 +228,12 @@ export async function assistantTurn(
   }
 
   if (action === 'operate') {
-    // operate 是"AI 提议、用户确认"的安全模型：这里只负责把模型意图翻译成校验过的操作，
-    // 真正落库要等用户在确认卡点头（见 store 的 confirmOperate / OPERATE_EXEC）。
-    // 复合操作：一次指令做多件事（建夹+放入、改名+收藏、移动等）→ 逐条校验，任一步不过转 ask 分步
+    // operate 是"AI 提议、用户确认"的安全模型：这里只翻译成校验过的操作，落库等确认卡点头。
+    // 复合操作逐条校验，任一步不过转 ask 分步
     const rawOps = obj?.ops
     if (Array.isArray(rawOps) && rawOps.length > 0) {
       const rawStepList = rawOps as Record<string, unknown>[]
-      // 新建代码 + 收藏夹等混在一组：create 可能在任意位置（模型实测会放中间/末尾），先整组判定，
-      // 统一转 CREATE_COMBO_ASK 分步——避免逐条校验只卡住 create 而让收藏夹步骤先行部分执行
+      // 混 create 的复合操作整组转分步——避免逐条校验只卡住 create 而让收藏夹步骤先行部分执行
       if (rawStepList.length > 1 && rawStepList.some(s => matchOp(s.op) === 'create')) {
         return done('ask', { action: 'ask', text: CREATE_COMBO_ASK, ids: [], note: '' })
       }
@@ -281,8 +264,8 @@ export async function assistantTurn(
       return done('operate', { action: 'operate', text: '', ids: [], note, op })
     }
     const value = typeof obj?.value === 'string' && obj.value.trim() ? obj.value.trim() : ''
-    // modify：只校验目标编号 + 需求非空。空泛需求（「优化一下」没说清改成什么样）交给 prompt 规则压，
-    // 不再本地词表拦截——实测词表对模型的臆测输出（长文本自编方案）命中率 0（见 架构决策记录 D18）
+    // modify：只校验目标编号 + 需求非空。空泛需求（"优化一下"没说清）交 prompt 规则压，
+    // 不本地词表拦截——实测词表对模型臆测输出命中率 0（见 架构决策记录 D18）
     if (op === 'modify') {
       const dedup = mapValidIds(obj?.ids, candidates.length)
       if (dedup.length === 0) {

@@ -18,13 +18,12 @@ import FontSizeControl from '@/components/global/form/FontSizeControl.vue'
 
 const { MonacoEditor } = useMonacoAsync()
 
-const route = useRoute()//拿当前路由信息
+const route = useRoute()
 const router = useRouter()
 const snippetStore = useSnippetStore()
 const aiStore = useAiAssistantStore()
 
 const isEdit = computed(() => route.name === 'snippet-edit')
-//现存的
 const existing = computed(() =>
   isEdit.value ? snippetStore.snippets.find(s => s.id === route.params.id) : null
 )
@@ -44,8 +43,8 @@ const fontSize = ref(20)
 
 // 草稿 + 未保存离开确认的逻辑在 composables/useDraft.ts（含 sessionStorage 读写与路由拦截）
 const { isDirty, showConfirm, handleConfirmOk, handleConfirmCancel, markCleared } = useDraft({
-  //可选链?.  existing 不存在时不会报错
-  id: existing.value?.id ?? null,//空值合并??前面为undefined/null时赋值null；编辑页传片段，id新增页为 null
+  // 编辑页传片段 id；新增页为 null
+  id: existing.value?.id ?? null,
   title,
   code,
   language,
@@ -69,12 +68,10 @@ const { isDirty, showConfirm, handleConfirmOk, handleConfirmCancel, markCleared 
 const codeLineCount = computed(() => (code.value.trim() ? code.value.split('\n').length : 0))
 
 // --- 文件上传（扩展名识别逻辑在 services/file.ts）---
-//自定义按钮
 function handleFileUpload() {
   fileInput.value?.click()
 }
 
-//原生按钮
 async function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -84,12 +81,12 @@ async function onFileSelected(event: Event) {
   try {
     const text = await file.text()
 
-    // 点开头的隐藏文件(.env/.gitignore)去扩展名会变空串 → 兜底用原名,避免标题为空
+    // 点开头的隐藏文件（.env/.gitignore）去掉扩展名会变空串 → 兜底用原名，避免标题为空
     title.value = file.name.replace(/\.[^.]+$/, '') || file.name
     code.value = text
     language.value = detectLanguage(file.name)
   } catch {
-    // 读取失败保持原内容,不覆盖已填的代码(静默处理,与 ensureDescription 一致)
+    // 读取失败保持原内容，不覆盖已填的代码（静默处理，与 ensureDescription 一致）
   } finally {
     uploading.value = false
     input.value = ''

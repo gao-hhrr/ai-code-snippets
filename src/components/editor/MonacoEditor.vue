@@ -7,10 +7,10 @@ import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 // 片段浏览/编辑不需要智能提示，只保留基础语法高亮 + 标准编辑器功能
 import * as monaco from '@/components/editor/monaco'
 
-// ============ 1. props：父组件传进来的"配置" ============
-// 这是一个被 v-model 用的"受控组件"：
-//   - 内容值由外部（父组件的 ref）决定，这里通过 modelValue 接收
-//   - 编辑器内部改动后，通过 emit('update:modelValue') 通知外部
+// ════════════════════════════════════════════════════════
+// 1. props：父组件传进来的「配置」——被 v-model 用的受控组件：
+//    内容值由外部 ref 决定（modelValue 接收），编辑器内部改动后 emit 上抛
+// ════════════════════════════════════════════════════════
 const props = defineProps<{
   modelValue: string          // 编辑器的内容（代码全文）
   language?: string           // 应用语言名，如 'JavaScript'（会被 languageToMonaco 翻译成 Monaco 的语言）
@@ -22,9 +22,11 @@ const props = defineProps<{
   paddingTop?: number         // 顶部留白
 }>()
 
-// ============ 2. emit：编辑器向外"广播"的事件 ============
+// ════════════════════════════════════════════════════════
+// 2. emit：编辑器向外「广播」的事件
+// ════════════════════════════════════════════════════════
 const emit = defineEmits<{
-  'update:modelValue': [value: string]                          // 内容变了 → 上抛全文（v-model 的"改"方向）
+  'update:modelValue': [value: string]
 }>()
 
 // container：模板里那个 div 的引用。Monaco 编辑器就"长"在这个 div 里。
@@ -32,9 +34,10 @@ const container = ref<HTMLElement>()
 // editor：编辑器实例。注意它是命令式 API 创建的对象，不是响应式数据，用普通变量存。
 let editor: monaco.editor.IStandaloneCodeEditor | null = null
 
-// ============ 3. 语言翻译：应用语言名 → Monaco 语言名 ============
-// 你的应用叫 'Vue'/'React'/'C++'，但 Monaco 内部叫 'html'/'javascript'/'cpp'，
-// 名字对不上，所以要做一次映射，Monaco 才知道用哪套高亮规则。
+// ════════════════════════════════════════════════════════
+// 3. 语言翻译：应用语言名 → Monaco 语言名
+// 应用叫 'Vue'/'C++'，Monaco 内部叫 'html'/'cpp'，名字对不上，需映射才知道用哪套高亮
+// ════════════════════════════════════════════════════════
 function languageToMonaco(lang: string): string {
   const map: Record<string, string> = {
     javascript: 'javascript',
@@ -64,12 +67,13 @@ function languageToMonaco(lang: string): string {
   return map[lang.toLowerCase()] || 'plaintext'  // 查不到 → 纯文本（没有高亮）
 }
 
-// ============ 4. 生命周期：组件挂载到 DOM 之后，创建编辑器 ============
+// ════════════════════════════════════════════════════════
+// 4. 生命周期：组件挂载到 DOM 后创建编辑器
+// ════════════════════════════════════════════════════════
 onMounted(() => {
   if (!container.value) return
 
-  // 核心一行：monaco.editor.create(一个普通 div, 配置) → 把这个 div 变成编辑器
-  // 创建是一次性的；之后要改配置，用 editor.updateOptions(...)（见下方 watch）
+  // monaco.editor.create(容器 div, 配置) 把 div 变成编辑器；创建一次性，之后改配置用 updateOptions（见 5）
   editor = monaco.editor.create(container.value, {
     value: props.modelValue,                                   // 初始内容
     language: languageToMonaco(props.language || ''),          // 初始语言（要翻译）
@@ -110,16 +114,16 @@ onMounted(() => {
 
 })
 
-// ============ 5. 页面 → 编辑器：props 变化时"热更新"编辑器 ============
-// 下面每个 watch 都在 onMounted（editor 已创建）之后才生效；
-// 注意每个回调里都先判 `if (editor && ...)` —— 防止 onMounted 之前触发报错。
-
+// ════════════════════════════════════════════════════════
+// 5. 页面 → 编辑器：props 变化时「热更新」编辑器
+// 每个 watch 回调先判 `if (editor && ...)`：防止 onMounted 之前触发报错
+// ════════════════════════════════════════════════════════
 watch(() => props.fontSize, (val) => {
-  if (editor && val) editor.updateOptions({ fontSize: val })   // 字号变了 → 改字号
+  if (editor && val) editor.updateOptions({ fontSize: val })
 })
 
 watch(() => props.wordWrap, (val) => {
-  if (editor) editor.updateOptions({ wordWrap: val ? 'on' : 'off' })  // 换行开关变了
+  if (editor) editor.updateOptions({ wordWrap: val ? 'on' : 'off' })
 })
 
 watch(() => props.language, (lang) => {
@@ -130,7 +134,7 @@ watch(() => props.language, (lang) => {
 })
 
 watch(() => props.readonly, (val) => {
-  if (editor) editor.updateOptions({ readOnly: val })          // 切只读
+  if (editor) editor.updateOptions({ readOnly: val })
 })
 
 watch(() => props.modelValue, (val) => {
@@ -143,7 +147,9 @@ watch(() => props.modelValue, (val) => {
   }
 })
 
-// ============ 6. 卸载：销毁编辑器，释放内存和事件监听 ============
+// ════════════════════════════════════════════════════════
+// 6. 卸载：销毁编辑器，释放内存和事件监听
+// ════════════════════════════════════════════════════════
 onBeforeUnmount(() => {
   editor?.dispose()
 })

@@ -1,5 +1,8 @@
 // ════════════════════════════════════════════════════════
 // router/index.ts —— 路由表：5 条懒加载路由（列表 / AI 助手 / 新建 / 详情 / 编辑）
+// 每条路由 () => import() 懒加载：首屏只拉当前页 chunk，其余按需加载
+// KeepAlive 按组件 name 匹配（App.vue include 'AiAssistantPage'），不是路由 name——
+// AI 助手页组件 defineOptions({ name: 'AiAssistantPage' })，路由 name 'ai-assistant' 仅导航用
 // ════════════════════════════════════════════════════════
 import { createRouter, createWebHistory } from 'vue-router'
 

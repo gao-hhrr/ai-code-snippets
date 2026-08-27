@@ -16,7 +16,8 @@ import iconfontSvg from './assets/iconfont.svg?raw' // ?raw：让 Vite 以纯字
 const iconfontHolder = document.createElement('div')
 iconfontHolder.innerHTML = iconfontSvg
 const sprite = iconfontHolder.firstElementChild as SVGElement
-sprite.setAttribute('aria-hidden', 'true')//无障碍阅读，让屏幕阅读器忽略当前元素
+// aria-hidden：雪碧图纯装饰，让屏幕阅读器忽略
+sprite.setAttribute('aria-hidden', 'true')
 sprite.style.width = '0'
 sprite.style.height = '0'
 sprite.style.position = 'absolute'
@@ -45,7 +46,6 @@ const isSlowNetwork =
     (typeof connection.downlink === 'number' && connection.downlink < 1.5))
 if (!isSlowNetwork) {
   if ('requestIdleCallback' in window) {
-    //浏览器空闲时执行的回调函数
     window.requestIdleCallback(() => {
       import('@/components/editor/MonacoEditor.vue')
     }, { timeout: 3000 })

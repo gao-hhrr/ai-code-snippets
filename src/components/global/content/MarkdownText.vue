@@ -10,7 +10,8 @@ const props = defineProps<{ text: string; size?: string }>()
 
 marked.setOptions({ gfm: true, breaks: true })
 
-// marked 同步模式下返回 string；先解析后净化，防止 XSS
+// 先解析后净化：marked 把 Markdown 转 HTML，DOMPurify 白名单剥掉 <script>/onclick 等危险内容。
+// AI 返回的文本不可信，v-html 直接注入会执行脚本（XSS）
 const html = computed(() => DOMPurify.sanitize(marked.parse(props.text) as string))
 </script>
 

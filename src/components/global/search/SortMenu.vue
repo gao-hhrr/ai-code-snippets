@@ -11,15 +11,15 @@ import AppIcon from '@/components/global/base/AppIcon.vue'
 
 const snippetStore = useSnippetStore()
 
-//选项选择
 const sortOptions = [
   { value: 'updated', label: '最近更新' },
   { value: 'created', label: '最近创建' },
   { value: 'title', label: '首字母' }
 ] satisfies { value: SortBy; label: string }[]
 
+// 当前维度不在选项里（初始态）时兜底显示「排序」
 const currentSortLabel = computed(
-  () => sortOptions.find(o => o.value === snippetStore.sortBy)?.label ?? '排序'// ??空值合并运算符，前面都为空时默认兜底文字
+  () => sortOptions.find(o => o.value === snippetStore.sortBy)?.label ?? '排序'
 )
 
 // 方向用文字表达（时间「新→旧」、首字母「A→Z」），比箭头符号零歧义

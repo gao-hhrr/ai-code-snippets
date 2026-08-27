@@ -21,11 +21,7 @@ const showPicker = ref(false)
 // 拖选/复制代码时松开鼠标也会触发 click → 有非折叠选区就忽略这次点击，
 // 否则在卡片上拖选复制一次就误跳详情（或批量模式下误勾选）
 function onCardClick() {
-  //获取鼠标选中的文本
   const sel = window.getSelection()
-  //选区是否为空，为空直接跳出   
-  // sel.isCollapsed === false：鼠标拖动框选了一段文字（复制文字场景）
-  // sel.isCollapsed === true：光标只是点一下，没有拖动选中文字
   if (sel && !sel.isCollapsed) return
   // 批量模式下点击卡片 = 切换选中，不跳详情
   if (snippetStore.batchMode) {

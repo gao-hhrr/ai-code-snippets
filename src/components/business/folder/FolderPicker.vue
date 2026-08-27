@@ -10,26 +10,23 @@ import AppIcon from '@/components/global/base/AppIcon.vue'
 
 const props = withDefaults(defineProps<{
   snippetId?: string
-  //toggle：单个片段可以选收藏到多个文件夹
-  //pick：底部操作栏时，选中多个片段收藏到一个文件夹
+  // toggle：单个片段可收藏进多个夹；pick：批量模式把选中片段一次收进一个夹
   mode?: 'toggle' | 'pick'
-  //弹窗弹出方向
   placement?: 'top' | 'bottom'
 }>(), { mode: 'toggle', placement: 'bottom' })
 
+// 事件由谁触发：close 供 SnippetCard 弹层关闭；pick 供 BatchActionBar 批量收藏
 const emit = defineEmits<{
-  (e: 'close'): void//SnippetCard
-  (e: 'pick', folderId: string): void//BatchActionBar
+  (e: 'close'): void
+  (e: 'pick', folderId: string): void
 }>()
 
 const snippetStore = useSnippetStore()
 
-//从全局片段列表找到对应那条片段数据
 const snippet = computed(() =>
   props.snippetId ? snippetStore.snippets.find(s => s.id === props.snippetId) : undefined
 )
 
-//判断是否已收藏
 function isChecked(folderId: string) {
   return props.mode === 'toggle' && !!snippet.value?.folderIds.includes(folderId)
 }
@@ -55,7 +52,8 @@ const newInput = ref<HTMLInputElement>()
 async function startCreate() {
   creating.value = true
   newName.value = ''
-  await nextTick()//等待DOM完成更新
+  // 等 DOM 渲染出输入框后再聚焦
+  await nextTick()
   newInput.value?.focus()
 }
 

@@ -7,6 +7,8 @@ import { diffLines, type Change } from 'diff'
 
 const props = defineProps<{ original: string; modified: string }>()
 
+// diffLines 做行级 diff：按行产出连续的 change 块（added/removed/unmodified），
+// 逐行着色让用户一眼看到 AI 改了哪几行，比整段替换直观
 const changes = computed(() => {
   return diffLines(props.original, props.modified)
 })

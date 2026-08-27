@@ -44,10 +44,7 @@ const listEl = ref<HTMLElement | null>(null)
 // 按 AI 返回顺序取片段（snippetStore.snippets 是库内顺序，不能直接用）。
 // 先建 Map 索引 O(1) 取，避免每个 id 都 filter 一遍库列表；filter 用类型守卫收窄掉 undefined
 function resultSnippets(all: Snippet[], ids: string[]): Snippet[] {
-  // 数组map生成 [id,片段] 二维数组；new Map构建id→片段的快速索引查表
   const map = new Map(all.map(s => [s.id, s]))
-  // 遍历AI的ids数组，顺序跟随ids；查找不到的id会得到undefined
-  // filter剔除undefined，同时TS类型守卫收窄类型，输出纯净Snippet数组
   return ids.map(id => map.get(id)).filter((s): s is Snippet => !!s)
 }
 
@@ -261,7 +258,6 @@ watch(
       @confirm="doReplace"
     />
     <!-- AI 提议删除/清空/删除收藏夹的双重确认：不可逆操作，确认卡上再弹一道 -->
-     <!-- `!!` 转布尔值：有值 → `true` 弹窗显示；`null` → `false` 弹窗关闭。 -->
     <ConfirmDialog
       :show="!!confirmOpTarget"
       :title="confirmOpDialog.title"

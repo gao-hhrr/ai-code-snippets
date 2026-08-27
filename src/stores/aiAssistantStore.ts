@@ -13,44 +13,35 @@ import { loadAIConversation, persistAIConversation } from '@/services/storage'
 import { DRAFT_KEY } from '@/composables/useDraft'
 
 // ════════════════════════════════════════════════════════
-// 操作执行：把确认的AI操作消息翻译成 snippetStore 的调用
-// 每个 op 对应一个 handler；snippetStore 由参数传入，模块本身不依赖store闭包，便于单测
-// 约定：成功返回 void / true；失败时：设置 msg.operateState='error' + 错误文案 return false
-// confirmOperate 收到false就标记为执行失败，不会被后面统一状态赋值覆盖
+// 操作执行：把确认的 AI 操作消息翻译成 snippetStore 的调用
+// handler 返回 false = 已设 error（找不到目标等），confirmOperate 收到 false 不标记 executed；
+// snippetStore 由参数传入，模块不依赖 store 闭包，便于单测
 // ════════════════════════════════════════════════════════
 
-// OpHandler：操作处理器【类型契约】，规定所有操作处理函数必须遵守的格式
-// msg: AI会话消息，携带操作相关全部数据(operateOp/searchIds/operateValue等)
-// store: pinia片段库store实例，由外部传入，方便单元测试，不模块内直接import
-// 返回值: boolean | void 
-//   - void / true：代表操作成功
-//   - return false：代表操作失败，外层不会标记operateState为executed
+// OpHandler 契约：msg 携带操作数据（operateOp/searchIds/operateValue 等），store 外部传入便于单测；
+// 返回 void/true = 成功，false = 已设 error
 type OpHandler = (msg: AssistantTurnMessage, store: ReturnType<typeof useSnippetStore>) => boolean | void
 
-// OPERATE_EXEC：操作分发表
-// Partial<Record<OperateOp, OpHandler>> TS类型拆解：
-//  1.Record<OperateOp, OpHandler>：对象key只能是OperateOp枚举值，每个value必须符合OpHandler函数契约
-//  2.Partial<>：把全部key变为可选，允许部分操作(例如create)不写handler，不走此处执行，改为跳转页面
-// 对象内部每一个函数，都是 OpHandler 类型的具体业务实现，TS编译时校验参数、返回值是否符合契约
+// 操作分发表。Partial<> 让 create/modify 可缺省：create 转编辑页、modify 走 ModifyCard，不在此执行
 const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
-  // 删除片段：searchIds可能为空，空数组的forEach不会执行，安全
+  // searchIds 可能为空；空数组 forEach 不执行，天然安全
   delete(msg, store) {
     (msg.searchIds ?? []).forEach(id => store.deleteSnippet(id))
   },
 
-  // 重命名片段：只取第一个片段id；operateValue是AI给出的新标题
+  // 重命名只取第一个片段
   rename(msg, store) {
     const id = msg.searchIds?.[0]
     if (id) store.updateSnippet(id, { title: msg.operateValue })
   },
 
-  // 导出片段：取第一条片段，调用下载工具函数导出代码文件
+  // 导出第一条片段为代码文件
   export(msg, store) {
     const s = msg.searchIds?.length ? store.snippets.find(x => x.id === msg.searchIds![0]) : undefined
     if (s) downloadText(s.code, s.title, langToExt(s.language))
   },
 
-  // 加入收藏夹：operateValue = 收藏夹名称；找不到收藏夹标记错误返回false
+  // 找不到收藏夹 → 标记错误返回 false，confirmOperate 不置 executed
   favorite(msg, store) {
     const f = store.folders.find(x => x.name === msg.operateValue)
     if (!f) {
@@ -58,11 +49,9 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
       msg.content = `（找不到名为「${msg.operateValue}」的收藏夹）`
       return false
     }
-    // 把searchIds全部片段移入该收藏夹
     (msg.searchIds ?? []).forEach(id => store.favoriteTo(id, f.id))
   },
 
-  // 移出收藏夹
   unfavorite(msg, store) {
     const f = store.folders.find(x => x.name === msg.operateValue)
     if (!f) {
@@ -73,12 +62,11 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
     (msg.searchIds ?? []).forEach(id => store.unfavoriteFrom(id, f.id))
   },
 
-  // 清空全部片段库
   clear(_, store) {
     store.clearAll()
   },
 
-  // 新建收藏夹：operateValue为收藏夹名字；addFolder返回id，为空代表失败（重名/空名称）
+  // addFolder 返回空 id = 重名或空名称
   createFolder(msg, store) {
     const id = store.addFolder(msg.operateValue || '')
     if (!id) {
@@ -88,7 +76,7 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
     }
   },
 
-  // 修改收藏夹名称：operateTarget=旧名称，operateValue=新名称
+  // operateTarget = 旧名，operateValue = 新名
   renameFolder(msg, store) {
     const f = store.folders.find(x => x.name === msg.operateTarget)
     if (!f) {
@@ -99,7 +87,6 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
     store.renameFolder(f.id, msg.operateValue || '')
   },
 
-  // 删除收藏夹
   deleteFolder(msg, store) {
     const f = store.folders.find(x => x.name === msg.operateValue)
     if (!f) {
@@ -110,7 +97,7 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
     store.deleteFolder(f.id)
   },
 
-  // 清空某个收藏夹内部片段，不删除收藏夹本身
+  // 只清空夹内片段，夹本身保留
   clearFolder(msg, store) {
     const f = store.folders.find(x => x.name === msg.operateValue)
     if (!f) {
@@ -121,11 +108,10 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
     store.clearFolder(f.id)
   },
 
-  // meta：修改片段元信息，language / description
+  // operateField 决定改 language 还是 description
   meta(msg, store) {
     const id = msg.searchIds?.[0]
     if (!id) return
-    // 根据operateField判断更新哪个字段
     store.updateSnippet(id, msg.operateField === 'language'
       ? { language: msg.operateValue }
       : { description: msg.operateValue })
@@ -139,8 +125,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 状态与常量
   // ════════════════════════════════════════════════════════
-  // 对话从 sessionStorage 恢复（初始化读，与编辑器草稿同策略；临时状态，关标签页即清）。
-  // 恢复时把"生成中"状态复位成失败：刷新/重进页面 = 请求已丢，保留 running 会恢复出永久转圈的卡
+  // 对话从 sessionStorage 恢复（临时状态，关标签页即清）。
+  // 恢复时把"生成中"复位成失败：刷新 = 请求已丢，保留 running 会恢复出永久转圈的卡
   const messages = ref<AssistantTurnMessage[]>(loadAIConversation().map(m => {
     if (m.modifyState === 'running') return { ...m, modifyState: 'error', content: m.content + '（修改被中断，请重新发起）' }
     if (m.operateState === 'running') return { ...m, operateState: 'error' }
@@ -154,8 +140,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 最近一次发送的用户消息（供「重试」一键重发）
   const lastUserText = ref('')
   // 对话任何变化自动落盘（deep：backfillSummary 改 thinkingSummary 等也能存到），
-  // 与 snippetStore 的 watch(snippets, persistSnippets) 同一套模式。
-  // 滚动位置不在这持久化：那是页面视图状态，改由 AiAssistantPage 用 sessionStorage 按草稿策略保存
+  // 与 snippetStore 同一套 watch+persist 模式；滚动位置是页面视图状态，不在此持久化
   watch(messages, persistAIConversation, { deep: true })
 
   // 503 过载退避重试中：页面显示"服务器繁忙，自动重试中"
@@ -176,18 +161,14 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   const freshSearch = ref(false)
   // 深度思考开关：默认关（生成/修改走非推理，快而稳）；开启后走推理，复杂需求质量更高但更慢
   const deepThink = ref(false)
-  // 对话上限：12 轮（user 计数）。与历史窗口对齐——历史只保留最近 12 条消息（=6 轮），
-  // 12 轮上限即「一次会话 ≈ 2 个历史窗口」，面试解释时数字统一更好讲；
-  // 成本主体是候选片段不是历史，配合「换话题」按钮（不带历史物理换题）已很充裕
+  // 对话上限：12 轮（user 计数），与历史窗口对齐——历史留最近 12 条（=6 轮），
+  // 即「一次会话 ≈ 2 个历史窗口」；成本主体是候选片段，配合「换话题」已很充裕
   const MAX_TURNS = 12
-  // 单次请求超时：正常一轮 6-12s，但推理模型对否定/排除语义（"没有注释的"）推理可达 1000+ token、
-  // 约 40-50 秒，30s 会误杀正常慢推理（实测超时后重试也必超时）；60s 兜底网络挂起与服务端异常
+  // 60s：推理模型对否定/排除语义可达 40-50s，30s 会误杀正常慢推理；60s 兜底网络挂起与服务端异常
   const REQUEST_TIMEOUT = 60_000
-  // 修改流程独立超时：改代码是重任务（推理 + 生成完整代码，30-90s 常见），不与搜索共用 60s——
-  // assistantTurn 已耗的时间会压缩它；独立计时，stop 仍可中断
+  // 修改独立超时：改代码是重任务（30-90s 常见），不与搜索共用 60s——assistantTurn 已耗时间会压缩它
   const MODIFY_TIMEOUT = 90_000
-  // 新建流程独立超时（分深度/非深度）：非深度（关思考直出）实测极端需求 42s 内完成，90s 兜底留足余量；
-  // 深度思考（推理模式）才需要 180s 给"挑战极限"这类需求收敛空间。之前固定 180s 让非深度模式干等三分钟
+  // 新建独立超时：非深度实测极端需求 42s 内，90s 兜底；深度思考（推理）才需 180s 给极限需求收敛空间
   const CREATE_TIMEOUT = 90_000
   const DEEP_THINK_TIMEOUT = 180_000
   const controller = ref<AbortController | null>(null)
@@ -232,121 +213,93 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
 
   // 用户发送普通提问主函数
   async function send(text: string) {
-    // 去除输入首尾空格
     const q = text.trim()
-    // 空输入 或者 当前正在请求，直接返回，防止重复提交
-    if (!q || sending.value) return
+    if (!q || sending.value) return  // 空输入 / 请求中，防止重复提交
 
-    // 对话轮数只统计用户消息，divider分割线、assistant回复不计入上限
+    // 轮数只统计用户消息，divider、assistant 回复不计入
     if (messages.value.filter(m => m.role === 'user').length >= MAX_TURNS) {
       error.value = { text: '对话已达上限，点击「重新开始」开启新对话', code: 'ERR_LIMIT' }
       return
     }
 
-    // 把用户提问推入消息数组，UI立刻展示用户消息
     messages.value.push({ role: 'user', content: q })
-    // 标记：正在发起网络请求
     sending.value = true
-    // 清空之前的错误提示
     error.value = null
-    // 缓存本次用户输入，给retry重试功能使用
-    lastUserText.value = q
-    // 重置请求耗时秒数
+    lastUserText.value = q  // 供「重试」一键重发
     elapsed.value = 0
-    // 清空模型思考过程缓存
     reasoning.value = ''
-    // 重置标记：模型还没输出正文
     composing.value = false
 
-    // 计时器：每秒elapsed自增，用于页面展示"AI思考很久"提示文案
+    // 每秒 elapsed+1，页面据此展示"AI 思考很久"提示；AbortController 供 stop() 中断
     const tick = setInterval(() => elapsed.value++, 1000)
-
-    // 创建中断控制器，stop()按钮可以用来终止本次请求
     const ac = new AbortController()
     controller.value = ac
 
-    // 标记：区分是【用户手动停止】还是【超时自动终止】
+    // timedOut 区分【用户手动停止】vs【超时自动终止】；503 重试时需重新倒计时（armTimeout 再调用）
     let timedOut = false
     let timeout: ReturnType<typeof setTimeout> | undefined
-
-    // 封装超时函数：遇到503自动重试时，需要重新倒计时，不能累计超时时间
     function armTimeout() {
-      clearTimeout(timeout) // 清除旧的超时定时器
+      clearTimeout(timeout)
       timeout = setTimeout(() => {
-        timedOut = true // 标记为超时触发
-        ac.abort() // 中断网络请求
+        timedOut = true
+        ac.abort()
       }, REQUEST_TIMEOUT)
     }
-    armTimeout() // 启动超时计时
+    armTimeout()
 
     try {
-      // freshSearch为true（换话题），则传给模型的历史为空；否则取当前用户消息之前的全部历史
+      // 换话题时历史为空（物理换题）；freshSearch 只生效一次，用完复位
       const history = freshSearch.value ? [] : messages.value.slice(0, -1)
-      // freshSearch只生效一次，用完立刻复位
       freshSearch.value = false
 
-      // 调用底层核心函数，发起SSE流式AI请求
       const reply = await assistantTurn(history, q, snippetStore.snippets, snippetStore.folders, {
-        signal: ac.signal, // 传入中断信号
-        onRetry: () => {
-          // 503服务器过载触发自动重试
+        signal: ac.signal,
+        onRetry: () => {  // 503 过载自动重试，超时重新倒计时
           retrying.value = true
-          armTimeout() // 重试时重置超时倒计时
+          armTimeout()
         },
-        onReasoning: (delta) => {
-          // 流式收到模型思考片段，追加保存
-          reasoning.value += delta
-        },
-        onChunk: () => {
-          // 收到模型正式回答正文，切换阶段状态为构思回应
-          composing.value = true
-        }
+        onReasoning: (delta) => { reasoning.value += delta },
+        onChunk: () => { composing.value = true }  // 收到正文 → 阶段切「构思回应」
       })
 
-      // AI返回操作指令（修改/删除/收藏片段），渲染确认卡片，不直接执行操作
+      // operate：渲染确认卡片，不直接执行
       if (reply.action === 'operate') {
         await runOperate(reply)
         return
       }
 
-      // 普通问答：组装assistant消息，存入对话列表
+      // 普通问答：组装消息入列表，后台异步补思考摘要（不阻塞主流程）
       const msg: AssistantTurnMessage = { role: 'assistant', content: reply.text, searchIds: reply.ids, note: reply.note, reasoning: reasoning.value }
       messages.value.push(msg)
-      // 后台异步生成思考摘要，不阻塞页面主流程
       backfillSummary(msg)
 
     } catch (err) {
-      // 请求被中止：区分是超时，还是用户手动点停止
+      // 中止分两类：超时 vs 用户手动停止，给不同文案
       if (isAbortError(err)) {
         error.value = timedOut
           ? { text: '搜索超时（60 秒）：AI 推理较慢或网络不稳，已自动停止，请点重试', code: 'ERR_TIMEOUT' }
           : { text: '已停止搜索', code: 'ERR_ABORTED' }
       } else if (err instanceof AIError) {
-        // 业务自定义AI错误，携带错误码、状态码、详情
         error.value = { text: err.message, code: err.code, status: err.status, detail: err.detail }
       } else {
-        // 未知错误兜底提示
         error.value = { text: 'AI 助手出错了，请重试', code: 'ERR_FALLBACK' }
       }
     } finally {
-      // 无论成功、失败、异常，必定执行资源清理，防止内存泄漏
-      clearInterval(tick)        // 清除耗时计时器
-      clearTimeout(timeout)      // 清除超时定时器
-      retrying.value = false     // 关闭重试UI标记
-      composing.value = false    // 关闭正文输出标记
-      elapsed.value = 0          // 重置耗时
-      // 防御判断：防止reset()已经修改controller.value，不要覆盖别人的赋值
+      // 必清理：防内存泄漏；controller 用守卫判断，避免覆盖 reset() 的新赋值
+      clearInterval(tick)
+      clearTimeout(timeout)
+      retrying.value = false
+      composing.value = false
+      elapsed.value = 0
       if (controller.value === ac) controller.value = null
-      sending.value = false      // 请求结束，关闭loading状态
+      sending.value = false
     }
   }
 
-  // 重试上一条消息：先移除已展示的 user 消息再重发，避免重复
+  // 重试上一条：失败/超时后末尾仍停在 user，先移除它避免 send 重新 push 造成重复
   function retry() {
     if (sending.value || !lastUserText.value) return
     const last = messages.value[messages.value.length - 1]
-    // 判断：最后一条刚好就是上次发送的用户消息（请求失败/超时中止场景，末尾停留在user）
-    // 满足条件就把这条user消息删掉，后面send会重新push这条消息，防止重复
     if (last?.role === 'user' && last.content === lastUserText.value) {
       messages.value.pop()
     }
@@ -356,10 +309,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 操作流程：AI 提议库结构操作（删除/重命名/收藏/导出/新建/清空/收藏夹/改描述语言/修改代码）
   // ════════════════════════════════════════════════════════
-  // AI 提议库结构操作：只展示确认卡，绝不直接执行。create 需先在本地调 generateCode 生成代码，
-  // 生成完才转待确认；收藏夹类操作 ids 为空，targetTitle 取夹名
+  // AI 提议库结构操作：只展示确认卡绝不直接执行；create 先本地生成代码再转待确认
   async function runOperate(reply: AssistantReply) {
-    // 复合操作（ops）：一次指令做多件事，逐条执行（每步一张结果卡）；单操作转成单个 step 走同一路径
+    // 复合操作逐条执行（每步一张结果卡）；单操作转单 step 走同一路径
     const steps: OperateStep[] = reply.ops?.length
       ? reply.ops
       : [{ op: reply.op!, ids: reply.ids, value: reply.value, target: reply.target, field: reply.field, language: reply.language }]
@@ -369,8 +321,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }
   }
 
-  // 单步库操作：create 生成代码转编辑页；可逆操作直接执行；不可逆操作落 pending 等用户确认。
-  // 复合操作每步一条消息，状态机与单操作完全一致
+  // 单步库操作：create 转编辑页、可逆操作直接执行、不可逆落 pending 等确认；每步一条消息
   async function runOperateStep(step: OperateStep, note: string, reasoningText: string) {
     const msg = buildOperateMsg(step, note, reasoningText)
     messages.value.push(msg)
@@ -378,18 +329,15 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     if (reasoningText) backfillSummary(msg)
     if (step.op === 'modify') return runModifyStep(step, msg)
     if (step.op === 'create') return runCreateStep(step, msg)
-    // 可逆操作：消息建好后立即落库（confirmOperate 内 switch → executed），卡片直接落到结果态
+    // 可逆操作：消息建好后立即落库，卡片直接到结果态
     if (REVERSIBLE_OPS.includes(step.op)) confirmOperate(msg)
   }
 
-  // 构造操作消息：生成式分支（create/modify）必须 reactive() 包裹。生成中 push 后还要改
-  // operateState/createdCode/createdProgress/modifyState 等字段，改原始对象不会触发 deep watch 落盘
-  // → 刷新时卡停在 running 被恢复成 error（操作卡消失）
+  // 生成式分支（create/modify）必须 reactive() 包裹：生成中要改 operateState/createdCode 等字段，
+  // 改原始对象不触发 deep watch 落盘 → 刷新时卡停在 running 被恢复成 error（操作卡消失）
   function buildOperateMsg(step: OperateStep, note: string, reasoningText: string) {
     const isFolderOp = OP_FOLDER.includes(step.op)
     const target = step.ids?.[0] ? snippetStore.snippets.find(s => s.id === step.ids![0]) : undefined
-    // reactive 是 Vue3 的响应式 API，接收一个普通对象，返回该对象的响应式代理副本。
-    // 只对对象、数组有效；不能处理基础类型（string/number/boolean），基础类型用 `ref`
     return reactive<AssistantTurnMessage>({
       role: 'assistant',
       content: '',
@@ -406,8 +354,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     })
   }
 
-  // 单修改（改代码）：生成式流程，ModifyCard 渲染。assistantTurn 只判定"改哪个+怎么改"（ids+value），
-  // 真正改写走 modifyCode 流式。独立控制器 + 独立超时：改代码是重任务，不与搜索的 60s 共用
+  // 单修改（改代码）：assistantTurn 只判定"改哪个+怎么改"（ids+value），真正改写走 modifyCode 流式
   async function runModifyStep(step: OperateStep, msg: AssistantTurnMessage) {
     const target = step.ids?.[0] ? snippetStore.snippets.find(s => s.id === step.ids![0]) : undefined
     if (!target || !step.value) {
@@ -425,7 +372,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }, deepThink.value ? DEEP_THINK_TIMEOUT : MODIFY_TIMEOUT)
     msg.requirement = step.value
     try {
-      // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度），服务端边生成边返回，不再干等整段响应
+      // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度）
       const result = await modifyCode(target.code, step.value, {
         signal: mc.signal,
         thinking: deepThink.value,
@@ -453,8 +400,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }
   }
 
-  // 新建（create 生成代码）：独立控制器 + 独立超时（对齐 modify 分支），生成是重任务
-  // （推理 + 完整代码），不与搜索的 60s 共用——assistantTurn 已耗时间会压缩它；流式生成边出边报进度
+  // 新建（create 生成代码）：独立控制器 + 超时（对齐 modify），生成是重任务、不与搜索 60s 共用
   async function runCreateStep(step: OperateStep, msg: AssistantTurnMessage) {
     const cc = new AbortController()
     createController = cc
@@ -493,8 +439,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }
   }
 
-  // 确认 AI 新建片段：不直接入库——把生成代码写入新建草稿（id=null），跳转编辑页让用户看完整代码、可修改，
-  // 点保存才真正入库。草稿机制与编辑页 useDraft 共用（loadDraft 校验 id===null 自动预填）
+  // 确认 AI 新建：不直接入库——写草稿（id=null）跳编辑页，用户确认后保存才入库（复用 useDraft 草稿机制）
   function confirmCreateToEditor(msg: AssistantTurnMessage) {
     if (!msg.createdCode) return
     // pending = 首次进入；executed + 未保存 = 从对话卡「重新编辑」再次进入（代码仍保留在消息里）
@@ -511,9 +456,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     // 重新进入：清掉上次「未保存」标记，等待本次编辑页结果回传
     msg.createSaved = undefined
   }
-  // 待编辑页回传结果的 create 消息：按「create + executed + 未回传」定位（每次只会有一个在途）——
-  // 不用对象引用而是按谓词查找，编辑页刷新后 store 重建也能对上，结果回传不丢。
-  // 回传设上 createSaved 后即不再是「待回传」，两次回传（保存成功 + 离开守卫）只生效一次
+  // 按谓词而非引用定位在途 create：编辑页刷新后 store 重建也能对上；回传设上 createSaved 后只生效一次
   function resolveCreateFromEditor(saved: boolean, snippetId?: string) {
     const msg = messages.value.find(m => m.operateOp === 'create' && m.operateState === 'executed' && m.createSaved === undefined && !!m.createdCode)
     if (!msg) return
@@ -521,10 +464,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     if (saved && snippetId) msg.createdSnippetId = snippetId
   }
 
-  // 用户确认后执行库结构操作（删除/清空等不可逆项，页面确认卡另有二次确认）。
-  // 批量：delete/favorite/unfavorite 遍历 searchIds；收藏夹类按夹名指代（ids 为空）。
-  // create 已改由 confirmCreateToEditor 处理（转编辑页看完整代码），不再在此直接入库。
-  // 执行翻译收敛在模块级 OPERATE_EXEC 映射表，这里只做状态守卫 + 统一落状态
+  // 用户确认后执行库结构操作（不可逆项页面另有二次确认）。
+  // 执行翻译收敛在 OPERATE_EXEC，这里只做状态守卫 + 统一落状态
   function confirmOperate(msg: AssistantTurnMessage) {
     if (msg.operateState !== 'pending') return
     // create 已改由 confirmCreateToEditor 处理（转编辑页看完整代码），不再在此直接入库
@@ -540,7 +481,6 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }
   }
 
-  // 用户取消库结构操作
   function cancelOperate(msg: AssistantTurnMessage) {
     if (msg.operateState !== 'pending') return
     msg.operateState = 'cancelled'
@@ -549,9 +489,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 修改流程：AI 修改代码的另存 / 替换 / 撤销 / 导出 + 编辑页回传
   // ════════════════════════════════════════════════════════
-  // 保存 AI 修改为新片段：不直接落库，写草稿跳到编辑页预填（标题/语言继承原片段），
-  // 用户在编辑页可改标题/语言/微调代码，点保存才真正 addSnippet（复用 create 的草稿机制）。
-  // 与 create 共用 DRAFT_KEY 不冲突：一次只会有一个「进编辑页」的在途流程
+  // 保存 AI 修改为新片段：写草稿跳编辑页预填（标题/语言继承原片段），保存才真正 addSnippet。
+  // 与 create 共用 DRAFT_KEY 不冲突——一次只会有一个「进编辑页」的在途流程
   function saveModifyToEditor(msg: AssistantTurnMessage) {
     if (!msg.modifiedCode || !msg.searchIds?.length || msg.modifyApplied) return
     const target = snippetStore.snippets.find(s => s.id === msg.searchIds![0])
@@ -565,9 +504,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }))
     msg.modifySave = 'pending'
   }
-  // 待编辑页回传结果的 modify 另存消息：按「done + pending 在途」定位（每次只会有一个在途）。
-  // 用谓词而非引用定位：编辑页刷新后 store 重建也能对上，结果回传不丢。
-  // 回传设上 modifySave 后即不再是「pending」，两次回传（保存成功 + 离开守卫）只生效一次
+  // 按谓词而非引用定位在途另存：编辑页刷新后 store 重建也能对上；回传设上 modifySave 后只生效一次
   function resolveModifyFromEditor(saved: boolean, snippetId?: string) {
     const msg = messages.value.find(m => m.modifyState === 'done' && m.modifySave === 'pending' && !!m.modifiedCode)
     if (!msg) return
@@ -597,7 +534,6 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     msg.modifyBackup = undefined
   }
 
-  // 导出 AI 修改结果
   function exportModify(msg: AssistantTurnMessage) {
     if (!msg.modifiedCode) return
     const target = snippetStore.snippets.find(s => s.id === msg.searchIds?.[0])
@@ -607,9 +543,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 对话辅助：后台补四步总结 / 预置对话前提
   // ════════════════════════════════════════════════════════
-  // 后台补全四步总结：消息 push 后立即返回，折叠面板先展示 reasoning 原文，总结跑完再替换成四步。
-  // 一轮一个总结（新总结会作废未完成的旧总结）；失败/思考太短保持原文兜底，绝不影响主流程。
-  // 通过响应式数组取回消息的 proxy 再赋值，确保触发渲染（传入的 msg 是 push 前的原始对象）
+  // 后台补四步总结：push 后立即返回，折叠面板先展示 reasoning 原文，跑完再替换。
+  // 一轮一个总结，失败/太短保持原文兜底；经响应式数组取回 proxy 赋值确保触发渲染
   function backfillSummary(msg: AssistantTurnMessage) {
     const text = reasoning.value.trim()
     if (text.length < 30) return
@@ -633,10 +568,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       })
   }
 
-  // 预置对话前提（详情页进入）：把指定片段作为一条"已找到"的结果消息，召回机制会把
-  // history 里的 searchIds 排最前，后续提问/修改天然围绕该片段。
-  // 保留已有对话不重置：旧对话选中的片段（仍留在 history 的 searchIds 里，召回会带上）
-  // 和本次详情页片段都能继续选中；同片段已作为种子存在时去重，避免重复进入堆积卡片
+  // 预置对话前提（详情页进入）：把指定片段作为"已找到"结果消息，history 里的 searchIds 召回排最前，
+  // 后续提问/修改天然围绕该片段。不重置已有对话；同片段已有种子时去重，避免重复堆积
   function seedContext(ids: string[], note: string) {
     const isSeed = (m: AssistantTurnMessage) => m.role === 'assistant' && !m.content && !m.divider && !!m.searchIds?.length
     const cur = messages.value.find(isSeed)
