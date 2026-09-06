@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════
 // api/operateMeta.ts —— 操作分类元数据：动作 × 对象矩阵，行为规则由分类推导（从 assistant.ts 拆出）
 // ════════════════════════════════════════════════════════
-// D17（见 架构决策记录.md）：13 种操作 = 9 个原子动作 × 3 个对象（片段/收藏夹/库）的矩阵。
+// 13 种操作 = 9 个原子动作 × 3 个对象（片段/收藏夹/库）的矩阵。
 // 散落的 VALID_OPS / REVERSIBLE_OPS / NON_COMPOSABLE_OPS / 校验分支 / store 的 folderOps 全由这张表推导，
 // 新增操作（复制片段、导出收藏夹等）= 表里加一行，其余代码零改动。
 // 消费方：tools.ts（工具 enum）、operateValidate.ts（组合/校验）、assistant.ts、store（REVERSIBLE_OPS/OP_FOLDER）。

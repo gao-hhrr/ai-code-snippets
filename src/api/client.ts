@@ -49,10 +49,13 @@ export function describeAIError(status: number, detail: string): { code: AIError
   return { code: 'ERR_API', message: `AI 请求失败（${status}）：${detail}` }
 }
 
-// 本地开发直连 DeepSeek（key 取本地 .env 的 VITE_AI_API_KEY，仅限本地）；
-// 生产由服务端代理转发，key 不落前端（见面试备战记录 Q5）
-const AI_API_URL = 'https://api.deepseek.com/chat/completions'
+// 两种运行模式：
+// - 直连（仅本地开发）：不发 VITE_AI_BASE_URL，走 DeepSeek 官方地址，key 取本地 .env 的 VITE_AI_API_KEY
+// - 代理（生产）：VITE_AI_BASE_URL 指向自建代理（见 worker/ai-proxy.js），key 只存在代理端环境变量，前端不持有。
+//   VITE_ 前缀变量会被 Vite 内联进构建产物，直连模式下 key 会明文暴露给每个访客——生产禁止直连
+const AI_API_URL = import.meta.env.VITE_AI_BASE_URL || 'https://api.deepseek.com/chat/completions'
 const AI_API_KEY = import.meta.env.VITE_AI_API_KEY || ''
+const IS_PROXY_MODE = Boolean(import.meta.env.VITE_AI_BASE_URL)
 const AI_MODEL = import.meta.env.VITE_AI_MODEL || 'deepseek-v4-flash'
 
 // ---------- function calling（工具调用）类型 ----------
@@ -118,8 +121,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export async function chat(options: ChatOptions): Promise<ChatResult> {
-  if (!AI_API_KEY) {
-    throw new AIError('未配置 AI API Key，请在项目根目录 .env 中设置 VITE_AI_API_KEY', 'ERR_KEY_MISSING')
+  if (!IS_PROXY_MODE && !AI_API_KEY) {
+    // 该分支只在直连模式触发——即 clone 后首次使用的新用户，文案只回答他此刻该做的一件事。
+    // 部署者的内容放 README 与 worker/ai-proxy.js 头注释，不进 UI 报错
+    throw new AIError(
+      '未配置 AI API Key：在项目根目录 .env 中设置 VITE_AI_API_KEY（见 README「启用 AI 功能」），改完重启 dev 服务生效',
+      'ERR_KEY_MISSING'
+    )
   }
 
   let res: Response
@@ -130,7 +138,8 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${AI_API_KEY}`
+          // 代理模式 key 由代理注入（前端不带）；直连模式 key 必有（上方已校验）
+          ...(AI_API_KEY ? { Authorization: `Bearer ${AI_API_KEY}` } : {})
         },
         signal: options.signal,
         body: JSON.stringify({

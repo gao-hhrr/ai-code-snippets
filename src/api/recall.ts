@@ -37,19 +37,28 @@ export function recallCandidates(
   // 构建收藏夹查表Map：key=收藏夹id，value=收藏夹名称，用于id转名字
   const folderName = new Map(folders.map(f => [f.id, f.name]))
 
-  // 关键词打分召回：遍历全部片段，多字段加权算分数，得到命中的片段列表
-  const hitSnippets = snippets
-    .map(s => {
-      // 当前片段可能归属多个收藏夹；通过folderIds查表拿到收藏夹名字，空格拼接成文本，用于检索打分
-      // folderName.get(id)拿不到时（收藏夹已删除）兜底为空字符串，避免出现undefined
-      const folderText = s.folderIds.map(id => folderName.get(id) || '').join(' ')
+  // 预计算小写字段：打分是 token×字段 扫描，小写化每片段只做一次，避免重复分配字符串
+  const lowerSnippets = snippets.map(s => ({
+    s,
+    title: s.title.toLowerCase(),
+    description: s.description.toLowerCase(),
+    // 当前片段可能归属多个收藏夹；通过folderIds查表拿到收藏夹名字，空格拼接成文本，用于检索打分
+    // folderName.get(id)拿不到时（收藏夹已删除）兜底为空字符串，避免出现undefined
+    folderText: s.folderIds.map(id => folderName.get(id) || '').join(' ').toLowerCase(),
+    language: s.language.toLowerCase(),
+    code: s.code.toLowerCase()
+  }))
+
+  // 关键词打分召回：多字段加权算分数，得到命中的片段列表
+  const hitSnippets = lowerSnippets
+    .map(({ s, title, description, folderText, language, code }) => {
       let score = 0
       for (const t of tokens) {
-        if (s.title.toLowerCase().includes(t)) score += 4        // 标题权重最高
-        if (s.description.toLowerCase().includes(t)) score += 3  // 描述
-        if (folderText.toLowerCase().includes(t)) score += 3    // 收藏夹名称
-        if (s.language.toLowerCase().includes(t)) score += 2     // 代码语言
-        if (s.code.toLowerCase().includes(t)) score += 0.5      // 代码正文权重最低，减少噪声
+        if (title.includes(t)) score += 4       // 标题权重最高
+        if (description.includes(t)) score += 3 // 描述
+        if (folderText.includes(t)) score += 3  // 收藏夹名称
+        if (language.includes(t)) score += 2    // 代码语言
+        if (code.includes(t)) score += 0.5      // 代码正文权重最低，减少噪声
       }
       return { s, score }
     })
@@ -58,16 +67,21 @@ export function recallCandidates(
     .slice(0, limit)                   // 截断数量
     .map(h => h.s)                     // 丢弃分数字段，只保留片段对象
 
-  // 收集历史对话中AI曾经返回过的片段（histSnippets，追问优先）
+  // 收集历史对话中AI曾经返回过的片段（histSnippets，追问优先）；
+  // Map 查表替代嵌套 find：按 id 查片段从 O(H×I×N) 降为一次 O(N) 建表 + O(1) 查
+  const snippetById = new Map(snippets.map(s => [s.id, s]))
   const histSnippets: SearchSnippet[] = []
+  const seenHist = new Set<string>()
   // for...of遍历history历史消息数组，m代表单条历史会话消息
   for (const m of history) {
     // m.searchIds ?? []：如果searchIds为null/undefined，兜底空数组防止循环报错
     for (const id of m.searchIds ?? []) {
-      // 根据id在全片段库找到对应的片段对象
-      const s = snippets.find(x => x.id === id)
-      // 片段存在，并且histSnippets数组内还没有该id，才push进去，避免内部重复
-      if (s && !histSnippets.some(x => x.id === s.id)) histSnippets.push(s)
+      const s = snippetById.get(id)
+      // 片段存在且未收集过才push，避免内部重复
+      if (s && !seenHist.has(s.id)) {
+        seenHist.add(s.id)
+        histSnippets.push(s)
+      }
     }
   }
 

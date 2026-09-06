@@ -1,0 +1,3 @@
+name = "ai-code-snippets-proxy"
+main = "ai-proxy.js"
+compatibility_date = "2026-08-01"

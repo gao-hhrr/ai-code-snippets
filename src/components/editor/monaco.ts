@@ -2,7 +2,7 @@
 // editor/monaco.ts —— Monaco 定制入口：裁剪体积的核心
 // 为什么定制：直接 import('monaco-editor') 会带 4 个语言服务 worker（TS 一个约 7MB），
 // 那是 IDE 级智能提示（自动补全/诊断）；本产品是片段收藏浏览，只需要语法高亮 + 标准编辑器功能。
-// 所以只引核心 API + 按需语言注册，剪掉 4 个 worker（9MB→5.8MB，见 Q24）
+// 所以只引核心 API + 按需语言注册，剪掉 4 个 worker（9MB→5.8MB）
 // ════════════════════════════════════════════════════════
 
 // Monaco 核心 API（monaco.editor.create、KeyCode 等从此导出）

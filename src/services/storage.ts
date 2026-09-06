@@ -24,8 +24,10 @@ function getJSON<T>(key: string, fallback: T): T {
 function setJSON(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // 忽略存储失败
+  } catch (err) {
+    // 写入失败（配额满/隐私模式）不能静默：静默等于用户数据悄悄丢，刷新才发现。
+    // 与 persistAIConversation 的 warn 同一标准，至少留排障线索
+    console.warn('[persist] localStorage 写入失败，数据可能未保存', key, err)
   }
 }
 

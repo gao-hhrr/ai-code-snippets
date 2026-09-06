@@ -139,9 +139,18 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   const elapsed = ref(0)
   // 最近一次发送的用户消息（供「重试」一键重发）
   const lastUserText = ref('')
-  // 对话任何变化自动落盘（deep：backfillSummary 改 thinkingSummary 等也能存到），
-  // 与 snippetStore 同一套 watch+persist 模式；滚动位置是页面视图状态，不在此持久化
-  watch(messages, persistAIConversation, { deep: true })
+  // 对话任何变化自动落盘（deep：backfillSummary 改 thinkingSummary 等也能存到）。
+  // 防抖 300ms：流式期间每 chunk 改 progress 字段，直接 persist = 每 chunk 全量
+  // stringify 整个对话；beforeunload / reset 同步 flush，防抖窗口内关页不丢对话
+  let persistTimer: ReturnType<typeof setTimeout> | undefined
+  watch(messages, () => {
+    clearTimeout(persistTimer)
+    persistTimer = setTimeout(() => persistAIConversation(messages.value), 300)
+  }, { deep: true })
+  window.addEventListener('beforeunload', () => {
+    clearTimeout(persistTimer)
+    persistAIConversation(messages.value)
+  })
 
   // 503 过载退避重试中：页面显示"服务器繁忙，自动重试中"
   const retrying = ref(false)
@@ -194,7 +203,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     error.value = null
     // 重试目标一并清掉：新会话里不会误发旧消息
     lastUserText.value = ''
-    // 清空后 watch 自动把 [] 落盘，刷新后不再出现旧对话
+    // 立即落盘空数组（不等防抖）：防抖窗口内关页会把旧对话留在 sessionStorage，重开时"复活"
+    clearTimeout(persistTimer)
+    persistAIConversation(messages.value)
   }
 
   // 用户主动停止搜索/修改（AbortError 由 catch 分支转为提示）

@@ -35,10 +35,10 @@ import { recallCandidates } from './recall'
 import { ASSISTANT_TOOLS } from './tools'
 
 // ════════ 一、成本 / 质量权衡常量 ════════
-// 三个都是"给多少 token / 多少候选"的预算开关——调大更准但更贵更慢，面试可讲取舍。
+// 三个都是"给多少 token / 多少候选"的预算开关——调大更准但更贵更慢。
 
-// 推理模型 reasoning 与 content 共用 max_tokens。D19 后主流程 content 恒为 0（completion <1300 token），
-// 放开到上限 8192 成本不变（按实际输出计费），仅消除极端超长输出的截断可能（见 架构决策记录 D22）
+// 推理模型 reasoning 与 content 共用 max_tokens。主流程只认 tool_calls 后 content 恒为 0（completion <1300 token），
+// 放开到上限 8192 成本不变（按实际输出计费），仅消除极端超长输出的截断可能
 const ASSISTANT_MAX_TOKENS = 8192
 // 单条代码进 prompt 的长度上限：正常片段全量可见，超长片段截断
 const SNIPPET_CODE_LIMIT = 3000
@@ -160,7 +160,7 @@ export async function assistantTurn(
   const prompt = buildUserPrompt({ candidates, snippets, folders, history, message, codeLimit, lastSearchNums })
 
   // 合法响应判定：只认已识别的工具调用，未走工具一律判无效重试；不再解析 content JSON
-  // （实测 22/22 轮模型稳定走工具，见 架构决策记录 D19）
+  // （实测 22/22 轮模型稳定走工具）
   const isValidResult = (r: ChatResult) => {
     const tc = r.toolCalls?.[0]
     return !!tc && (ACTIONS as readonly string[]).includes(tc.name)
@@ -265,7 +265,7 @@ export async function assistantTurn(
     }
     const value = typeof obj?.value === 'string' && obj.value.trim() ? obj.value.trim() : ''
     // modify：只校验目标编号 + 需求非空。空泛需求（"优化一下"没说清）交 prompt 规则压，
-    // 不本地词表拦截——实测词表对模型臆测输出命中率 0（见 架构决策记录 D18）
+    // 不本地词表拦截——实测词表对模型臆测输出命中率 0
     if (op === 'modify') {
       const dedup = mapValidIds(obj?.ids, candidates.length)
       if (dedup.length === 0) {

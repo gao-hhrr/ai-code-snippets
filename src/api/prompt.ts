@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════
 // api/prompt.ts —— AI 助手 prompt 组装：候选片段 + 对话历史 + 当前消息 → 发给模型的指令文本
 // ════════════════════════════════════════════════════════
-// system/user 分层（2026-08-25 重构，见 项目难点记录.md #17）：
+// system/user 分层（2026-08-25 重构）：
 //   buildSystemPrompt —— 持久部分（角色/规则/示例/防注入声明），跨轮复用，不随候选/历史变化
 //   buildUserPrompt   —— 本轮任务数据（候选片段/收藏夹/历史/当前消息/追问边界），每轮变化
 // 设计原则：不做意图解析、全库内容直进模型、模型自主读内容决策（见 assistant.ts 头部注释）。
@@ -87,7 +87,11 @@ export function buildUserPrompt(p: BuildAssistantPromptParams): string {
       const dateMark = fmtDate(s.createdAt) ? `创建于 ${fmtDate(s.createdAt)}` : ''
       parts.push(`（${[folderMark, dateMark].filter(Boolean).join(' · ')}）`)
       if (s.description) parts.push(`（${s.description}）`)
-      return `${parts.join(' ')}\n\`\`\`\n${s.code.slice(0, p.codeLimit)}\n\`\`\``
+      // 截断必须显式告知模型：否则模型拿到残缺代码却不知道，会基于不完整内容做总结/修改
+      const truncated = s.code.length > p.codeLimit
+      const code = truncated ? s.code.slice(0, p.codeLimit) : s.code
+      const truncMark = truncated ? `（注意：此片段代码过长已截断，仅显示前 ${p.codeLimit} 字符，不要假设未显示部分的内容）` : ''
+      return `${parts.join(' ')}\n\`\`\`\n${code}\n\`\`\`${truncMark}`
     })
     .join('\n\n')
 
