@@ -19,7 +19,7 @@
 
 - 轻量代码保管：所有设计围绕"存、找、AI"，拒绝 IDE 化
 - 无第三方 AI SDK，底层链路手写（SSE / function calling），原理可控可讲
-- 在线 Demo：服务端代理已实现（Cloudflare Worker，见 `worker/` 与「部署」），上线后补链接
+- 在线 Demo：**https://acs.ggg2287.xyz**（前端与 AI 代理分离部署：`acs` 子域承载页面，`api` 子域转发 AI 请求，key 不落前端）
 
 ## 请求链路
 
