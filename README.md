@@ -91,9 +91,12 @@ npx wrangler secret put ALLOWED_ORIGIN # 可选：限定只允许你的站点域
 ## 设计决策（含实测）
 
 **性能**
-- 首屏轻量化：路由懒加载 + Monaco 按需加载 + 语言裁剪（72→19，tokenizer 按语言懒加载），首屏仅约 123KB JS（gzip）；Monaco（约 4MB，gzip）只在进编辑器时加载
-- 空闲预加载 + 弱网保护：浏览器空闲时预热 Monaco，首次进编辑器秒开；2G/3G/低带宽/省流量模式自动跳过
-- 白屏期加载占位：`index.html` 静态占位 + 路由就绪门，全程有 loading
+- 首屏轻量化：路由懒加载 + Monaco 按需加载 + 语言裁剪（72→19，tokenizer 按语言懒加载）+ pinyin-pro 字典（286KB）动态加载，首屏 JS 约 80KB（gzip，实测 modulepreload 全集合）；Monaco（两层裁剪后约 3.9MB / gzip 约 1MB）只在进详情页（只读高亮）/ 编辑页（可编辑）时按需加载
+- modulepreload 砍瀑布：构建期插件从首屏路由 chunk 沿静态依赖闭包（BFS）注入 `<link rel="modulepreload">`，浏览器解析完 HTML 并行拉取全部首屏依赖——砍掉「entry → 路由 chunk → 共享 chunk」的串行往返（每跳 1 个 RTT）
+- 空闲预热 + 弱网保护：`router.isReady()` 之后浏览器空闲时预热其余路由 chunk 与 Monaco（太早发起会和首屏 chunk 抢带宽，弱网下"空闲"是假空闲）；省流量 / 2G·3G / downlink < 1.5Mbps 自动跳过
+- 骨架屏两段接力：`index.html` 内联静态骨架（纯 HTML/CSS，先于 JS 渲染）+ 路由就绪门渲染同款 Vue 骨架，两段无缝衔接；路由切换 120ms 延迟显示顶部进度条（缓存命中不闪条）
+- 悬停预取兜底：入口按钮 / 片段卡片 `pointerenter` 即预取目标路由 chunk（预热被弱网跳过时的保险）
+- 产物级强缓存：构建文件名带内容 hash，内容不变 URL 不变 → 资源长期缓存、二次访问几乎零下载（HTML 入口不缓存，保证新版本可被发现）——性能优化的主战场在首访
 
 **AI 工程**
 - 手写 SSE，不用 OpenAI SDK：`fetch` + `ReadableStream` 自解析 `data:` 事件流，原理可控可讲；流式只用于捕获思考过程、驱动阶段指示与进度，文字攒完一次性渲染（避免逐字上屏撞上半截 Markdown）；配套 AbortController 中断、503 退避重试、AIError 错误码体系
@@ -112,7 +115,7 @@ npx wrangler secret put ALLOWED_ORIGIN # 可选：限定只允许你的站点域
 
 ```
 src/
-├── main.ts                 # 入口：注册 Pinia/router、注入 iconfont 雪碧图、空闲预热 Monaco（弱网跳过）
+├── main.ts                 # 入口：注册 Pinia/router、注入 iconfont 雪碧图、路由就绪后空闲预热路由 chunk 与 Monaco（弱网跳过）
 ├── router/index.ts         # 路由表（5 条路由 / 4 个页面）
 ├── views/                  # 只放页面组件（纯组装），零件全在 components/
 │   ├── snippet-list/       # / —— 片段列表页（主界面）
@@ -126,7 +129,7 @@ src/
 ├── stores/                 # Pinia：snippetStore（片段+收藏夹，watch 自动持久化）/ aiAssistantStore
 ├── api/                    # AI 调用层（唯一 AI 入口）：assistant 编排 · client SSE · tasks 任务 · prompt/operate/recall/tools 拆分
 ├── composables/            # useDraft / useMonacoAsync / useClickOutside / useScrollRestore / useGoBack
-├── services/               # 纯 TS 不依赖 Vue：storage / seed / languages / sort / file / date
+├── services/               # 纯 TS 不依赖 Vue：storage / seed / languages / sort / file / date / prefetch
 ├── types/                  # 领域类型（Snippet / Folder）
 ├── assets/                 # iconfont 雪碧图
 └── style.css               # 全局样式（zinc 层级 / 焦点环 / 过渡）
