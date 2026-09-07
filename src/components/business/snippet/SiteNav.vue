@@ -7,6 +7,7 @@ import { useSnippetStore } from '@/stores/snippetStore'
 import { useRouter, useRoute } from 'vue-router'
 import type { FilterType } from '@/stores/snippetStore'
 import { isWithinDays } from '@/services/date'
+import { prefetchRoute } from '@/services/prefetch'
 import NavFolders from '@/components/business/folder/NavFolders.vue'
 import AppIcon from '@/components/global/base/AppIcon.vue'
 
@@ -54,6 +55,7 @@ const recentCount = computed(() =>
       <button
         class="w-full flex items-center justify-center gap-1 px-4 py-2.5 rounded-lg text-base font-semibold text-github-blue border border-github-blue bg-white hover:bg-github-blue-light hover:border-github-blue-dark active:scale-[0.98] transition-all cursor-pointer"
         @click="goNew"
+        @pointerenter="prefetchRoute('editor')"
       >
         <AppIcon name="plus" :size="18" />
         新建片段
@@ -62,6 +64,7 @@ const recentCount = computed(() =>
         class="w-full flex items-center justify-center gap-1 px-4 py-2.5 rounded-lg text-base font-semibold text-github-blue border border-github-blue bg-white hover:bg-github-blue-light hover:border-github-blue-dark active:scale-[0.98] transition-all cursor-pointer"
         title="AI 助手：对话查找、总结你的代码片段"
         @click="router.push('/ai')"
+        @pointerenter="prefetchRoute('assistant')"
       >
         <AppIcon name="search" :size="18" />
         AI 助手

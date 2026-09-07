@@ -9,6 +9,7 @@ import './style.css'
 // 所有界面图标都定义在 src/assets/iconfont.svg（一个 <svg> 装多个 <symbol>），
 // 组件通过 AppIcon.vue 的 <use> 引用；这里只负责在启动时把整个文件注入页面
 import iconfontSvg from './assets/iconfont.svg?raw' // ?raw：让 Vite 以纯字符串返回 SVG 内容，才能手动注入 DOM
+import { prefetchAllRoutes } from '@/services/prefetch'
 
 // iconfont symbol 必须在 app.mount 前注入 DOM，否则首屏 <use> 解析不到 symbol、图标空白。
 // 雪碧图本身不可见：零尺寸 + absolute + overflow:hidden（不能用 display:none，会破坏 symbol 解析）
@@ -29,10 +30,10 @@ app.use(createPinia())
 app.use(router)
 app.mount('#app')
 
-// Monaco 体积大（~4MB）异步加载；应用空闲时后台预热模块缓存，
-// 首次进详情/编辑页编辑器即可秒开（同一模块后续 import 直接命中缓存）。
-// 弱网不预热：4MB 预加载会与首屏交互抢带宽，弱网里"浏览器空闲"其实是假空闲，
-// 改由真正进编辑器时再按需加载（与不预热行为一致）。
+// 首屏就绪且浏览器空闲时后台预热：先拉其余路由 chunk（合计 ~120KB，导航即点即达），
+// 再拉 Monaco（~4MB，首次进详情/编辑页编辑器秒开）。时机必须在 router.isReady() 之后：
+// 太早发起会和首屏路由 chunk 抢带宽（网络慢时"空闲"是假空闲）。
+// 弱网不预热：大体积预加载会与用户交互抢带宽，改由真正进入页面时按需加载。
 // 弱网判定覆盖三层：省流量模式 / 网络类型 2G·3G / 实测带宽很低
 // （downlink 能抓到标称 4G 但实际很慢的情况，如 DevTools 的 Slow 4G 只有 0.4Mbps）。
 type ConnectionInfo = { saveData?: boolean; effectiveType?: string; downlink?: number }
@@ -45,11 +46,15 @@ const isSlowNetwork =
     connection.effectiveType === '3g' ||
     (typeof connection.downlink === 'number' && connection.downlink < 1.5))
 if (!isSlowNetwork) {
-  if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(() => {
-      import('@/components/editor/MonacoEditor.vue')
-    }, { timeout: 3000 })
-  } else {
-    setTimeout(() => import('@/components/editor/MonacoEditor.vue'), 2000)
+  const preheat = () => {
+    prefetchAllRoutes()
+    import('@/components/editor/MonacoEditor.vue')
   }
+  router.isReady().then(() => {
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(preheat, { timeout: 4000 })
+    } else {
+      setTimeout(preheat, 2000)
+    }
+  })
 }

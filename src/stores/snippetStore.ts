@@ -6,7 +6,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { Snippet, Folder } from '@/types'
-import { compareSnippets } from '@/services/sort'
+import { compareSnippets, ensurePinyin } from '@/services/sort'
 import type { SortBy, SortDir } from '@/services/sort'
 import { isWithinDays } from '@/services/date'
 import { generateDescription } from '@/api/ai'
@@ -36,6 +36,14 @@ export const useSnippetStore = defineStore('snippet', () => {
   // 排序不持久化：每次进入页面默认「最近更新 ↓」，会话内切换即时生效
   const sortBy = ref<SortBy>('updated')
   const sortDir = ref<SortDir>('desc')
+  // 拼音词典懒加载（348KB）：首次切到标题排序才拉取，到位前列表用码元序兜底，
+  // 此 ref 翻转让 filteredSnippets 重算，自动纠正为拼音混排
+  const pinyinReady = ref(false)
+  watch(sortBy, by => {
+    if (by === 'title' && !pinyinReady.value) {
+      ensurePinyin().then(() => { pinyinReady.value = true })
+    }
+  })
 
   // --- 批量选择状态 ---
   // 没有显式"批量模式"：有选中片段即视为批量态（底部操作条随之出现）
@@ -88,7 +96,9 @@ export const useSnippetStore = defineStore('snippet', () => {
       result = result.filter(s => s.title.toLowerCase().includes(q))
     }
 
-    // sort 返回负值 a 在 b 前，正值 a 在 b 后；比较逻辑见 services/sort.ts
+    // sort 返回负值 a 在 b 前，正值 a 在 b 后；比较逻辑见 services/sort.ts。
+    // 读 pinyinReady 注册依赖：词典异步到位后触发重算，把兜底码元序纠正为拼音序
+    void pinyinReady.value
     result = [...result].sort((a, b) => compareSnippets(a, b, sortBy.value, sortDir.value))
 
     return result

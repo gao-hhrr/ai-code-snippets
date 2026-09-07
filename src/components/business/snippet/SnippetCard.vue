@@ -9,6 +9,7 @@ import { useRouter } from 'vue-router'
 import FolderPicker from '@/components/business/folder/FolderPicker.vue'
 import AppIcon from '@/components/global/base/AppIcon.vue'
 import { formatTime } from '@/services/date'
+import { prefetchRoute } from '@/services/prefetch'
 
 const props = defineProps<{ snippet: Snippet }>()
 const snippetStore = useSnippetStore()
@@ -46,6 +47,7 @@ function goDetail() {
       isSelected ? 'ring-2 ring-github-blue bg-github-blue-light/60 shadow-md' : ''
     ]"
     @click="onCardClick"
+    @pointerenter="prefetchRoute('detail')"
   >
     <div class="flex items-center justify-between mb-2">
       <div class="flex items-center gap-2 shrink-0">
