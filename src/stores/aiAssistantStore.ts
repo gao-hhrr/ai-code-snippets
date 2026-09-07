@@ -170,9 +170,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   const freshSearch = ref(false)
   // 深度思考开关：默认关（生成/修改走非推理，快而稳）；开启后走推理，复杂需求质量更高但更慢
   const deepThink = ref(false)
-  // 对话上限：12 轮（user 计数），与历史窗口对齐——历史留最近 12 条（=6 轮），
-  // 即「一次会话 ≈ 2 个历史窗口」；成本主体是候选片段，配合「换话题」已很充裕
-  const MAX_TURNS = 12
+  // 对话上限：30 轮（user 计数）；历史窗口留最近 20 条（=10 轮），「一次会话 ≈ 3 个历史窗口」。
+  // 成本主体是候选片段，历史压缩后每条仅几百 token，30 轮增量可忽略；片段级长期记忆走 histSnippets 全场通道，不受窗口限制
+  const MAX_TURNS = 30
   // 60s：推理模型对否定/排除语义可达 40-50s，30s 会误杀正常慢推理；60s 兜底网络挂起与服务端异常
   const REQUEST_TIMEOUT = 60_000
   // 修改独立超时：改代码是重任务（30-90s 常见），不与搜索共用 60s——assistantTurn 已耗时间会压缩它
@@ -325,7 +325,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     // 复合操作逐条执行（每步一张结果卡）；单操作转单 step 走同一路径
     const steps: OperateStep[] = reply.ops?.length
       ? reply.ops
-      : [{ op: reply.op!, ids: reply.ids, value: reply.value, target: reply.target, field: reply.field, language: reply.language }]
+      : [{ op: reply.op!, ids: reply.ids, value: reply.value, target: reply.target, field: reply.field, language: reply.language, title: reply.title }]
     for (let i = 0; i < steps.length; i++) {
       // 复合操作的思考过程只挂第一条消息，避免多张卡重复显示同一段 reasoning
       await runOperateStep(steps[i], reply.note, i === 0 ? reasoning.value : '')
@@ -357,6 +357,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       reasoning: reasoningText,
       operateOp: step.op,
       operateValue: step.value,
+      operateTitle: step.title,
       operateTarget: step.target,
       operateField: step.field,
       // modify 不设 operateState：走 ModifyCard 渲染（modifyState 字段组），OperateCard 不会误渲染
@@ -458,7 +459,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     if (!canEnter) return
     sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
       id: null,
-      title: msg.operateValue || '',
+      title: msg.operateTitle || msg.operateValue || '',
       code: msg.createdCode,
       language: msg.createdLanguage || 'text',
       description: ''
@@ -506,9 +507,11 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     if (!msg.modifiedCode || !msg.searchIds?.length || msg.modifyApplied) return
     const target = snippetStore.snippets.find(s => s.id === msg.searchIds![0])
     if (!target) return
+    // 标题带修改要点：多版本另存可区分（原「(AI 优化)」固定后缀，存几个都同名）
+    const tag = (msg.requirement || '').replace(/^改成/, '').trim().slice(0, 12) || '优化'
     sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
       id: null,
-      title: target.title + ' (AI 优化)',
+      title: target.title + `（AI 优化·${tag}${(msg.requirement || '').trim().length > 12 ? '…' : ''}）`,
       code: msg.modifiedCode,
       language: target.language,
       description: target.description || ''

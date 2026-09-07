@@ -55,7 +55,8 @@ export interface AssistantTurnMessage {
   modifySavedSnippetId?: string // 另存入库后的新片段 id（「查看」跳详情）
   // --- ③ operate 流程（AI 提议库结构操作，用户确认才执行）---
   operateOp?: OperateOp
-  operateValue?: string  // rename 的新标题 / favorite、unfavorite 的夹名 / create 的标题或需求 / 各 folder op 的夹名 / meta 的新值
+  operateValue?: string  // rename 的新标题 / favorite、unfavorite 的夹名 / create 的生成需求 / 各 folder op 的夹名 / meta 的新值
+  operateTitle?: string // create 的片段标题（与生成需求分离；旧消息无此字段，UI 回退 operateValue）
   operateTarget?: string // renameFolder 旧夹名（AI 按名指代夹）
   operateField?: 'description' | 'language' // meta 的目标字段
   // 状态机：pending(待确认) → executed/cancelled/error；create 先 running(生成代码) 再 pending(待进编辑页)
@@ -90,6 +91,7 @@ export interface OperateStep {
   target?: string // renameFolder 的旧夹名（AI 按名指代夹）
   field?: 'description' | 'language' // meta 的目标字段
   language?: string // create 的代码语言（复合中 create 不允许，保留用于一致性）
+  title?: string // create 的片段标题（与 value 的生成需求分离）
 }
 
 // assistantTurn 的返回契约（"解析 + 本地校验后的动作"）：store 据此分发。
@@ -101,10 +103,11 @@ export interface AssistantReply {
   note: string
   // operate 的库结构操作：AI 只提议，用户确认后前端才执行
   op?: OperateOp
-  value?: string // rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的标题或需求 / 各 folder op 的夹名 / meta 的新值 / modify 的修改需求
+  value?: string // rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的生成需求 / 各 folder op 的夹名 / meta 的新值 / modify 的修改需求
   target?: string // renameFolder 的旧夹名（AI 按名指代夹）
   field?: 'description' | 'language' // meta 的目标字段
   language?: string // create 的代码语言
+  title?: string // create 的片段标题（简短名词短语；模型未输出时上层回退用 value）
   // 复合操作：一次指令要求做多件事（建夹+放入、改名+收藏、移动等）时的操作序列；
   // 仅限可逆操作，含 delete/clear/deleteFolder/clearFolder/create 时应在 assistant 转 ask 分步。
   // 与单 op 互斥：存在 ops 时忽略 op/value 等单操作字段

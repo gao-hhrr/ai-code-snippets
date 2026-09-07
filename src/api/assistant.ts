@@ -286,10 +286,12 @@ export async function assistantTurn(
     // create：生成式操作，先校验需求文本，真正的代码生成由 store 发起第二个请求（tasks.ts）
     if (op === 'create') {
       if (!value) {
-        return done('ask', { action: 'ask', text: '你想新建什么样的代码？说一下需求或标题，比如「新建一个防抖的片段」。', ids: [], note: '' })
+        return done('ask', { action: 'ask', text: '你想新建什么样的代码？说一下需求，比如「新建一个防抖的片段」。', ids: [], note: '' })
       }
       const language = typeof obj?.language === 'string' && obj.language.trim() ? obj.language.trim() : ''
-      return done('operate', { action: 'operate', text: '', ids: [], note, op, value, language })
+      // title 与 value 分离：title 是给确认卡和编辑页的短标题，value 是生成需求——模型未输出时上层回退用 value
+      const title = typeof obj?.title === 'string' && obj.title.trim() ? obj.title.trim() : ''
+      return done('operate', { action: 'operate', text: '', ids: [], note, op, value, language, title })
     }
     // 收藏夹类操作与改描述/语言：按夹名/value 指代，不需要通用片段编号流程
     if (op === 'createFolder' || op === 'deleteFolder' || op === 'clearFolder') {

@@ -63,10 +63,11 @@ export const ASSISTANT_TOOLS: ChatTool[] = [
             }
           },
           ids: { type: 'array', items: { type: 'integer' }, description: '目标片段编号（delete/favorite/unfavorite/modify 支持多个；create/clear 不需要；新建收藏夹并放入片段时，用 ops 里第二步 favorite 的 ids）' },
-          value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的标题或需求 / 各 folder 操作的夹名 / meta 的新值 / modify 的修改需求' },
+          value: { type: 'string', description: 'rename 的新标题 / favorite、unfavorite 的收藏夹名 / create 的生成需求（想生成什么样的代码，具体描述功能与要求）/ 各 folder 操作的夹名 / meta 的新值 / modify 的修改需求' },
           target: { type: 'string', description: 'renameFolder 的旧夹名（从「当前收藏夹」里选）' },
           field: { type: 'string', enum: ['description', 'language'], description: 'meta 的目标字段' },
           language: { type: 'string', description: 'create 的代码语言' },
+          title: { type: 'string', description: 'create 的片段标题：简短名词短语（≤16 字），如「防抖函数」「请求封装」；其他操作不需要' },
           note: { type: 'string', description: '可选：操作提醒（删除/清空等不可逆操作提醒「请确认」）' }
         },
         required: ['op']

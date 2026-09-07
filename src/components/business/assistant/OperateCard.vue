@@ -88,7 +88,7 @@ function operateDesc(msg: AssistantTurnMessage, snippets: Snippet[], totalCount:
       return snippets.length > 1
         ? `将把以下 ${snippets.length} 个片段移出「${msg.operateValue}」：${listLines}`
         : `将把片段「${title}」移出「${msg.operateValue}」。`
-    case 'create': return `将新建片段「${msg.operateValue || '未命名'}」（${msg.createdLanguage || 'text'}），进入编辑页查看完整代码，可修改后保存入库。`
+    case 'create': return `将新建片段「${msg.operateTitle || msg.operateValue || '未命名'}」（${msg.createdLanguage || 'text'}）。进入编辑页查看完整代码，可修改后保存入库。`
     case 'clear': return `将删除全部 ${totalCount} 个片段，不可恢复。`
     case 'createFolder': return `将新建收藏夹「${msg.operateValue}」。`
     case 'renameFolder': return `将把收藏夹「${msg.operateTarget}」改名为「${msg.operateValue}」。`

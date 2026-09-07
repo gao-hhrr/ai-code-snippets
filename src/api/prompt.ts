@@ -9,8 +9,9 @@
 import { fmtDate } from '@/services/date'
 import type { SearchSnippet, SearchFolder, AssistantTurnMessage } from './types'
 
-// 历史消息最多保留最近 12 条（6 轮对话），防止上下文无限膨胀
-const ASSISTANT_HISTORY_LIMIT = 12
+// 历史消息最多保留最近 20 条（10 轮对话）——聊天原文只兜住近期相关性即可，超窗的对话由「换话题」兜底，
+// 片段级长期记忆不受此限制（recall histSnippets 全场收集 searchIds）
+const ASSISTANT_HISTORY_LIMIT = 20
 
 export interface BuildAssistantPromptParams {
   // 本次召回的候选（编号只对应这些候选）
@@ -64,7 +65,8 @@ export function buildSystemPrompt(): string {
     '- 用户「防抖的更简单点的」→ search，在 1 号防抖里筛最简的那版',
     '- 用户「把第 2 个改成支持参数」→ operate op:modify, ids:[2], value:「改成支持参数」',
     '- 用户「把第 2 个优化一下」没说清改成什么样 → ask 追问怎么改，不要自己臆测一个具体改法直接 operate',
-    '- 用户「新建一个防抖片段」→ operate op:create, value:「防抖」',
+    '- 用户「新建一个防抖片段」→ operate op:create, title:「防抖」, value:「一个防抖函数，延迟 300ms，连续触发只执行最后一次」（title 是给片段起的短名字，value 是生成需求，两者分开写）',
+    '- 用户「一次生成节流和请求封装两个片段」→ 库里已有的直接 search 取用、不必重复建；没有的 ask「一次只能新建一个，先建哪个」——绝不把多个需求塞进一个 create，也不静默漏掉其中某个（此条只限「生成/新建」类请求；「有没有 / 找现成的 xx」类想直接取用的，按 search 检索）',
     '- 用户「新建收藏夹 常用，把第 1 个放进去」→ operate ops:[{op:"createFolder",value:"常用"},{op:"favorite",ids:[1],value:"常用"}]',
     '',
     '## 安全声明',
