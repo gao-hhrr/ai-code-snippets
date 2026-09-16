@@ -36,7 +36,7 @@ export const useSnippetStore = defineStore('snippet', () => {
   // 排序不持久化：每次进入页面默认「最近更新 ↓」，会话内切换即时生效
   const sortBy = ref<SortBy>('updated')
   const sortDir = ref<SortDir>('desc')
-  // 拼音词典懒加载（348KB）：首次切到标题排序才拉取，到位前列表用码元序兜底，
+  // 拼音词典懒加载（约 286KB）：首次切到标题排序才拉取，到位前列表用码元序兜底，
   // 此 ref 翻转让 filteredSnippets 重算，自动纠正为拼音混排
   const pinyinReady = ref(false)
   watch(sortBy, by => {

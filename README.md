@@ -139,12 +139,6 @@ worker/
 └── wrangler.toml           # Worker 部署配置
 ```
 
-## Roadmap
-
-- 混合检索：关键词 + embedding + RRF 融合排序，库上量后平滑切换（上层接口已预留）
-- Node + SQLite 第二版存储：数据脱离浏览器配额、可迁移，补全栈能力
-- 遗留代码库解释器：上传文件集复用现有 AI 管线（检索注入 + 总结 + function calling）
-
 ## License
 
 [MIT](LICENSE)

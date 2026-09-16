@@ -6,7 +6,7 @@ import type { Snippet } from '@/types'
 export type SortBy = 'updated' | 'created' | 'title'
 export type SortDir = 'asc' | 'desc'
 
-// pinyin-pro 的词典约 348KB，静态 import 会进首页关键路径。懒加载：默认排序是「最近更新」，
+// pinyin-pro 的词典约 286KB（构建产物实测），静态 import 会进首页关键路径。懒加载：默认排序是「最近更新」，
 // 只在用户首次切到标题排序时由 store 调 ensurePinyin() 拉取；到位前用码元比较兜底。
 type PinyinFn = (s: string, opts: { toneType: string }) => string
 let pinyinFn: PinyinFn | null = null
