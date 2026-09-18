@@ -41,6 +41,9 @@ export function isAbortError(err: unknown): boolean {
 // 之前直接透传英文原文（如 400 context length），用户无法区分问题类型。
 export function describeAIError(status: number, detail: string): { code: AIErrorCode; message: string } {
   const d = detail.toLowerCase()
+  // 必须先判：代理没配 Key 是**部署配置错误**，不是"服务器繁忙"——重试永远不会成功，
+  // 文案要指向真正的修复动作（站主补 secret），别让用户白等。与直连模式共用 ERR_KEY_MISSING（同一根因：没有 key）
+  if (/proxy missing/.test(d)) return { code: 'ERR_KEY_MISSING', message: '本站的 AI 服务未配置好（代理缺少 API Key），AI 功能暂时不可用' }
   if (status === 401) return { code: 'ERR_UNAUTHORIZED', message: 'AI API Key 无效或已过期，请检查 Key 配置' }
   if (status === 402 || /balance|insufficient|quota|inactive/.test(d)) return { code: 'ERR_INSUFFICIENT', message: 'AI 账户余额不足或额度用尽，请到平台充值或检查用量' }
   if (status === 429) return { code: 'ERR_RATE_LIMIT', message: 'AI 请求过于频繁，请稍等片刻再试' }
@@ -77,10 +80,13 @@ export interface ToolCall {
   arguments: Record<string, unknown>
 }
 
-// chat() 的返回：content 为纯文本答案；toolCalls 为模型请求的工具调用（没有则为空数组）
+// chat() 的返回：content 为纯文本答案；toolCalls 为模型请求的工具调用（没有则为空数组）；
+// finishReason 是"输出为什么结束"的服务端事实：'stop' 自然结束、'length' 撞 max_tokens 上限、
+// 'tool_calls' 走了工具调用。上游靠它判断"有没有拿到完整输出"——只有服务端知道有没有被截断
 export interface ChatResult {
   content: string
   toolCalls: ToolCall[]
+  finishReason: string | null
 }
 
 export interface ChatOptions {
@@ -169,8 +175,13 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
       try {
         raw = await res.text()
         const data = JSON.parse(raw)
-        const message = data.choices?.[0]?.message
-        return { content: typeof message?.content === 'string' ? message.content : '', toolCalls: parseToolCalls(message?.tool_calls) }
+        const choice = data.choices?.[0]
+        const message = choice?.message
+        return {
+          content: typeof message?.content === 'string' ? message.content : '',
+          toolCalls: parseToolCalls(message?.tool_calls),
+          finishReason: typeof choice?.finish_reason === 'string' ? choice.finish_reason : null
+        }
       } catch {
         if (attempt < 1) {
           await sleep(1000, options.signal)
@@ -232,18 +243,26 @@ async function readStream(
   let full = ''
   // 流式累积的 tool_calls：按 index 槽位存放，name 整段到达、arguments 分片拼接
   const streamed: Array<{ name: string; arguments: string }> = []
+  // 结束原因：最后一帧（delta 为空对象）带 finish_reason。'length' = 撞 max_tokens 上限
+  let finishReason: string | null = null
+  // 解析失败计数：只在控制台可见。正文为空时用它区分"服务端没发"和"发了但解析层丢了"——
+  // 两者都表现为 content 空，只看正文无从分辨
+  let parseErrors = 0
   // SSE 事件可能被网络切成跨多个 chunk 的半行：buffer 缓存未完成行，等下一 chunk 拼完整再解析。
   // 之前按 chunk.split('\n') 直接切，跨 chunk 的行会被整体丢掉——长输出（生成代码）内容大量丢失，
   // 短输出（搜索工具 JSON）单 chunk 装下碰不到，所以"搜索正常、生成代码空"。
   let buffer = ''
 
   const handleLine = (line: string) => {
-    if (!line.startsWith('data: ')) return
-    const payload = line.slice(6).trim()
+    // 不要求冒号后必须有空格（标准是 'data: '，但 'data:{...}' 也应能收到）
+    if (!line.startsWith('data:')) return
+    const payload = line.slice(5).trim()
     if (payload === '[DONE]') return
     try {
       const parsed = JSON.parse(payload)
-      const delta = parsed.choices?.[0]?.delta
+      const choice = parsed.choices?.[0]
+      if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason
+      const delta = choice?.delta
       // 推理模型思考过程与最终回答分两个字段流式返回：reasoning_content 在 content 之前吐完
       if (delta?.reasoning_content) onReasoning?.(delta.reasoning_content)
       if (delta?.content) {
@@ -261,7 +280,10 @@ async function readStream(
           if (tc.function?.arguments) streamed[idx].arguments += tc.function.arguments
         }
       }
-    } catch { /* 忽略损坏分片（跨 chunk 的半行已被 buffer 拼好，到不了这） */ }
+    } catch {
+      // 损坏分片跳过但不能静默：不计数的话"解析层丢数据"会伪装成"模型没输出"，把排障方向带偏
+      parseErrors++
+    }
   }
 
   try {
@@ -282,9 +304,10 @@ async function readStream(
     throw new AIError('流式输出中断，请重试', 'ERR_STREAM')
   }
 
+  if (parseErrors) console.warn(`[sse] ${parseErrors} 个分片解析失败（已收到但未计入 content）`)
   // 流结束时把累积的 arguments 字符串统一解析成对象（API 协议保证是合法 JSON）
   const toolCalls = parseToolCalls(
     streamed.filter(tc => tc.name).map(tc => ({ function: { name: tc.name, arguments: tc.arguments } }))
   )
-  return { content: full, toolCalls }
+  return { content: full, toolCalls, finishReason }
 }

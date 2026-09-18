@@ -7,7 +7,7 @@ import { defineStore } from 'pinia'
 import { ref, reactive, computed, watch } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { assistantTurn, modifyCode, generateCode, summarizeThinking, AIError, isAbortError, REVERSIBLE_OPS, OP_FOLDER } from '@/api/ai'
-import type { AssistantTurnMessage, AssistantReply, OperateStep, OperateOp } from '@/api/ai'
+import type { AssistantTurnMessage, AssistantReply, OperateStep, OperateOp, AIErrorCode } from '@/api/ai'
 import { downloadText, langToExt } from '@/services/file'
 import { loadAIConversation, persistAIConversation } from '@/services/storage'
 import { DRAFT_KEY } from '@/composables/useDraft'
@@ -118,6 +118,20 @@ const OPERATE_EXEC: Partial<Record<OperateOp, OpHandler>> = {
   },
 }
 
+// 生成 / 修改失败时的兜底文案。AIError 自带"人话 + 稳定 code"两层（describeAIError 按状态码映射），
+// 别把它压成笼统的"失败请重试"：余额不足 / Key 无效 / 限流 / 流式中断 的处置完全不同，
+// 用户看不到原因就只会反复点重试。人话给用户看，code 留给控制台定位
+function aiFailText(err: unknown, fallback: string): string {
+  if (!(err instanceof AIError)) return fallback
+  console.warn(`[ai-operate] ${err.code}${err.status ? ` HTTP ${err.status}` : ''}`, err.detail ?? '')
+  return `（${err.message}）`
+}
+
+// UI 提示槽里可能出现的 code = AI 调用层的错误（11）+ 本地产生的（3：超时 / 主动停止 / 轮数上限）。
+// 不并进 AIErrorCode：那个类型的含义是"AI 调用失败的原因"，而"用户按了停止"根本不是 AI 失败——
+// 并进去会让那个类型失去意义。错误 vs 状态由 tone 区分，不靠 code
+type NoticeCode = AIErrorCode | 'ERR_TIMEOUT' | 'ERR_ABORTED' | 'ERR_LIMIT'
+
 
 export const useAiAssistantStore = defineStore('aiAssistant', () => {
   const snippetStore = useSnippetStore()
@@ -134,7 +148,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   }))
   const sending = ref(false)
   // 结构化错误：人话 text 给用户看，code/status/detail 供「详情」展开与调试定位
-  const error = ref<{ text: string; code?: string; status?: number; detail?: string } | null>(null)
+  // tone：默认 'error'（红字）；'info' 给"用户主动停止""到达轮数上限"这类**状态**——
+  // 它们不是错误，用红字报警会让用户以为出问题了
+  const error = ref<{ text: string; code?: NoticeCode; status?: number; detail?: string; tone?: 'error' | 'info' } | null>(null)
   // 本轮等待秒数（sending 期间每秒 +1）：超过阈值页面切换"AI 思考中"阶段提示
   const elapsed = ref(0)
   // 最近一次发送的用户消息（供「重试」一键重发）
@@ -229,7 +245,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
 
     // 轮数只统计用户消息，divider、assistant 回复不计入
     if (messages.value.filter(m => m.role === 'user').length >= MAX_TURNS) {
-      error.value = { text: '对话已达上限，点击「重新开始」开启新对话', code: 'ERR_LIMIT' }
+      error.value = { text: '对话已达上限，点击「重新开始」开启新对话', code: 'ERR_LIMIT', tone: 'info' }
       return
     }
 
@@ -273,9 +289,18 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
         onChunk: () => { composing.value = true }  // 收到正文 → 阶段切「构思回应」
       })
 
-      // operate：渲染确认卡片，不直接执行
+      // operate：渲染确认卡片，不直接执行。
+      // 内层单独 try 包住：runOperate 做的是**本地操作**（删 / 收藏 / 生成），它的异常不该落到
+      // 下面那层 AI 的 catch 里被显示成「AI 助手出错了」——那是错归因，还会掩盖真实 bug
       if (reply.action === 'operate') {
-        await runOperate(reply)
+        try {
+          await runOperate(reply)
+        } catch (err) {
+          if (!isAbortError(err)) {
+            console.error('[ai-operate] 本地操作执行失败', err)
+            error.value = { text: '操作执行失败，请重试', code: 'ERR_FALLBACK' }
+          }
+        }
         return
       }
 
@@ -289,10 +314,12 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       if (isAbortError(err)) {
         error.value = timedOut
           ? { text: '搜索超时（60 秒）：AI 推理较慢或网络不稳，已自动停止，请点重试', code: 'ERR_TIMEOUT' }
-          : { text: '已停止搜索', code: 'ERR_ABORTED' }
+          // 用户自己按的停止，不是错误 → tone:'info'，别用红字报警
+          : { text: '已停止搜索', code: 'ERR_ABORTED', tone: 'info' }
       } else if (err instanceof AIError) {
         error.value = { text: err.message, code: err.code, status: err.status, detail: err.detail }
       } else {
+        // 兜底：助手在发请求之前（召回 / prompt 组装）抛出的意外异常
         error.value = { text: 'AI 助手出错了，请重试', code: 'ERR_FALLBACK' }
       }
     } finally {
@@ -385,6 +412,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     msg.requirement = step.value
     try {
       // 流式改写：onChunk 实时累加已生成字符数（修改卡显示进度）
+      // 两次调用都撞输出上限：这不是"换种说法"能解决的，得让用户缩小改动范围
+      let outputLimit = false
       const result = await modifyCode(target.code, step.value, {
         signal: mc.signal,
         thinking: deepThink.value,
@@ -392,20 +421,23 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
           msg.modifyProgress = (msg.modifyProgress ?? 0) + delta.length
         },
         // 深度思考失败降级：标记消息，ModifyCard 提示用户本次是普通模式结果
-        onFallback: () => { msg.modifiedDegraded = true }
+        onFallback: () => { msg.modifiedDegraded = true },
+        onOutputLimit: () => { outputLimit = true }
       })
       if (result) {
         msg.modifiedCode = result
         msg.modifyState = 'done'
       } else {
         msg.modifyState = 'error'
-        msg.content = '（AI 未返回修改结果，请换种说法重试）'
+        msg.content = outputLimit
+          ? '（改动后的代码超出了模型单次输出上限，重试也一样——请把需求拆成两步，或缩小改动范围）'
+          : '（AI 未返回修改结果，请换种说法重试）'
       }
     } catch (err) {
       msg.modifyState = 'error'
       msg.content = timedOut
         ? '（修改超时：代码较长或 AI 推理较慢，已自动停止，请重试）'
-        : isAbortError(err) ? '（修改已停止）' : '（修改失败，请重试）'
+        : isAbortError(err) ? '（修改已停止）' : aiFailText(err, '（修改失败，请重试）')
     } finally {
       clearTimeout(timer)
       if (modifyController === mc) modifyController = null
@@ -423,6 +455,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       cc.abort()
     }, deepThink.value ? DEEP_THINK_TIMEOUT : CREATE_TIMEOUT)
     try {
+      // 两次调用都撞输出上限：这不是"换种说法"能解决的，得让用户把需求拆小
+      let outputLimit = false
       const code = await generateCode(step.value || '', step.language || 'text', {
         signal: cc.signal,
         thinking: deepThink.value,
@@ -430,7 +464,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
           msg.createdProgress = (msg.createdProgress ?? 0) + delta.length
         },
         // 深度思考失败降级：标记消息，OperateCard 提示用户本次结果是普通模式生成
-        onFallback: () => { msg.createdDegraded = true }
+        onFallback: () => { msg.createdDegraded = true },
+        onOutputLimit: () => { outputLimit = true }
       })
       if (code) {
         msg.createdCode = code
@@ -438,13 +473,15 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
         msg.operateState = 'pending'
       } else {
         msg.operateState = 'error'
-        msg.content = '（AI 未生成代码，请换种说法重试）'
+        msg.content = outputLimit
+          ? '（需求的代码量超出了模型单次输出上限，重试也一样——请把需求拆成两步，先生成主体再补细节）'
+          : '（AI 未生成代码，请换种说法重试）'
       }
     } catch (err) {
       msg.operateState = 'error'
       msg.content = timedOut
         ? '（生成超时：AI 推理较慢，已自动停止，请重试）'
-        : isAbortError(err) ? '（生成已停止）' : '（生成失败，请重试）'
+        : isAbortError(err) ? '（生成已停止）' : aiFailText(err, '（生成失败，请重试）')
     } finally {
       clearTimeout(timer)
       if (createController === cc) createController = null

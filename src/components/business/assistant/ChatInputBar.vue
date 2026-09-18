@@ -29,6 +29,9 @@ function formatErrorDetail(e: { code?: string; status?: number; detail?: string 
 }
 const errorDetail = computed(() => formatErrorDetail(assistantStore.error))
 
+// 只有真错误用红字；"已停止搜索""对话已达上限"是**状态**不是错误，用中性灰（tone:'info'）
+const errorTone = computed(() => assistantStore.error?.tone === 'info' ? 'text-zinc-500' : 'text-red-500')
+
 // 对话轮数上限：只数 user 消息，达到后禁用输入并提示开启新对话
 const reachedLimit = () => assistantStore.messages.filter(m => m.role === 'user').length >= assistantStore.MAX_TURNS
 
@@ -62,7 +65,7 @@ defineExpose({ focusInput: () => inputEl.value?.focus() })
         <!-- 渐变遮罩：消息沉入底部前柔和淡出，避免硬切 -->
         <div class="h-12" style="background: linear-gradient(to top, var(--color-zinc-50), transparent)"></div>
         <div class="bg-zinc-50 px-4 sm:px-6 py-5 pointer-events-auto">
-          <div v-if="assistantStore.error" class="text-xs text-red-500 mb-2 space-y-1">
+          <div v-if="assistantStore.error" class="text-xs mb-2 space-y-1" :class="errorTone">
             <div class="flex items-start justify-between gap-2">
               <span class="min-w-0 break-words">{{ assistantStore.error.text }}</span>
               <button

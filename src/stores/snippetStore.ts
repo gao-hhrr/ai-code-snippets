@@ -9,7 +9,7 @@ import type { Snippet, Folder } from '@/types'
 import { compareSnippets, ensurePinyin } from '@/services/sort'
 import type { SortBy, SortDir } from '@/services/sort'
 import { isWithinDays } from '@/services/date'
-import { generateDescription } from '@/api/ai'
+import { generateDescription, logAiCall, AIError } from '@/api/ai'
 import {
   loadSnippets, loadFolders, persistSnippets, persistFolders, migrateData
 } from '@/services/storage'
@@ -164,6 +164,7 @@ export const useSnippetStore = defineStore('snippet', () => {
     // 片段不存在 / 已有描述 / 生成中 → 跳过（防重复调用）
     if (!s || s.description || isGeneratingDescription(id)) return
     generatingDescriptionIds.value.push(id)
+    const startedAt = Date.now()
     try {
       const desc = (await generateDescription(s.title, s.code, s.language)).trim()
       // 写入前二次校验：生成期间片段可能被删、用户可能已手动填描述
@@ -171,8 +172,15 @@ export const useSnippetStore = defineStore('snippet', () => {
       if (current && !current.description && desc) {
         current.description = desc
       }
-    } catch {
-      // 静默：AI 接口报错不弹窗打断
+    } catch (err) {
+      // 静默是对的：后台任务不该弹窗打断用户。但必须留痕——否则"描述一直不出现"
+      // 既没有提示、也没有可查的数据。这里是 ERR_PARSE（非流式解析失败）唯一的抛出点
+      logAiCall({
+        action: 'describe',
+        ms: Date.now() - startedAt,
+        errCode: err instanceof AIError ? err.code : 'ERR_UNKNOWN',
+        errMsg: err instanceof Error ? err.message : String(err)
+      })
     } finally {
       // 无论成败都移除「生成中」标记
       generatingDescriptionIds.value = generatingDescriptionIds.value.filter(x => x !== id)

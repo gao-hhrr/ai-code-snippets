@@ -1,7 +1,16 @@
 // ════════════════════════════════════════════════════════
 // api/tasks.ts —— 单项 AI 任务：generateDescription / generateCode / modifyCode
 // ════════════════════════════════════════════════════════
-import { chat } from './client'
+import { chat, type ChatResult } from './client'
+
+// 一次调用是否拿到了完整可用的结果。两个条件都要查，缺一不可：
+//   ① 正文为空——推理吃满预算、或模型没产出；
+//   ② finish_reason === 'length'——撞了 max_tokens 上限，正文被截断。
+// 只查 ① 会漏掉 ②：推理留了一点余量时正文非空，半截代码会被当成功返回。
+// 服务端未返回 finishReason 时退化成"正文非空即通过"。
+function usable(res: ChatResult): boolean {
+  return res.content.trim().length > 0 && res.finishReason !== 'length'
+}
 
 // 为片段生成一句"人话"描述：代码表达不了的用途/背景，AI 助手理解片段的元信息。
 // 保存后异步调用（不阻塞跳转），失败保持空串，由 UI 提供重试
@@ -39,7 +48,16 @@ export async function generateDescription(
 export async function generateCode(
   description: string,
   language: string,
-  opts: { signal?: AbortSignal; onChunk?: (delta: string) => void; thinking?: boolean; onFallback?: () => void } = {}
+  opts: {
+    signal?: AbortSignal
+    onChunk?: (delta: string) => void
+    thinking?: boolean
+    // 降级重试拿到了结果时回调（描述的是"交付的这份结果来自普通模式"，所以重试失败时不调）
+    onFallback?: () => void
+    // 两次调用都撞 max_tokens 上限时回调：说明正文本身就超过模型的单次输出上限，重试救不回来，
+    // 调用方该提示用户"拆小需求"而不是"换种说法重试"
+    onOutputLimit?: () => void
+  } = {}
 ): Promise<string> {
   const deepThink = opts.thinking === true
 
@@ -65,10 +83,11 @@ export async function generateCode(
     `需求：${description}`
   ].join('\n')
 
-  const call = async (content: string, extra: { thinking?: boolean; reasoningEffort?: 'low' | 'medium' | 'high' } = {}) => {
-    // 累积本次调用的思考字符数：content 为空时用它区分「思考吃光预算」vs「模型空输出」两类降级原因
+  const call = async (content: string, extra: { thinking?: boolean } = {}) => {
+    // 累积本次调用的思考字符数：仅作日志参考，不参与判定
     let reasoningChars = 0
     const started = Date.now()
+    const thinking = extra.thinking ?? opts.thinking
     const result = await chat({
       messages: [{ role: 'user', content }],
       // 推理模型的 reasoning 与 content 共享 max_tokens：推理过长会吃光预算导致 content 为空。
@@ -78,46 +97,61 @@ export async function generateCode(
       onChunk: opts.onChunk,
       onReasoning: (delta) => { reasoningChars += delta.length },
       // thinking 透传：false 时 client 关思考（直出），true/缺省时走推理默认
-      thinking: extra.thinking ?? opts.thinking,
+      thinking,
       // 深度思考开启时默认钳制思考到 low：v4-flash 默认/medium/high 都会思考到吃光预算导致 content 空
-      reasoningEffort: extra.reasoningEffort ?? (opts.thinking === true ? 'low' : undefined)
+      reasoningEffort: thinking ? 'low' : undefined
     })
     return { result, reasoningChars, ms: Date.now() - started }
   }
 
   // 深度思考：用户显式开启，用鼓励分析的 prompt；钳制思考保证 content 有预算。
-  // 兜底：思考仍吃光预算导致 content 空时，降级非深度直出重试一次，保证能拿到结果
+  // 兜底：没拿到完整结果（正文空、或撞上限被截断）时，降级非深度直出重试一次
   if (deepThink) {
-    const { result: res, reasoningChars, ms } = await call(deepPrompt)
-    if (!res.content) {
-      // 控制台定位：content 空 = 触发降级；思考字符数大 → 思考吃光预算，小/零 → 模型空输出
-      const cause = reasoningChars > 2000 ? '思考吃光预算' : '模型空输出'
-      console.warn(`[ai-generate] 深度思考返回空(思考${reasoningChars}字/${ms}ms) → ${cause}，降级非深度直出重试`)
-      // 通知调用方本次是降级结果（UI 据此提示用户"深度思考未生效，生成的是普通模式结果"）
-      opts.onFallback?.()
-      const retry = await call(buildPrompt('直接给出完整代码，不要思考过程，不要分析，立即输出。'), { thinking: false, reasoningEffort: undefined })
-      if (!retry.result.content) console.warn(`[ai-generate] 降级重试仍返回空(思考${retry.reasoningChars}字/${retry.ms}ms)`)
-      return retry.result.content
+    const first = await call(deepPrompt)
+    if (usable(first.result)) return first.result.content
+
+    console.warn(
+      `[ai-generate] 深度思考未拿到完整结果(finish=${first.result.finishReason}, ` +
+      `正文${first.result.content.length}字, 思考${first.reasoningChars}字, ${first.ms}ms) → 降级非深度直出重试`
+    )
+    // 关闭思考后预算全留给正文，空 / 截断都能被这一次重试救回
+    const retry = await call(buildPrompt('直接给出完整代码，不要思考过程，不要分析，立即输出。'), { thinking: false })
+    if (!usable(retry.result)) {
+      console.warn(`[ai-generate] 降级重试仍未拿到完整结果(finish=${retry.result.finishReason}, 正文${retry.result.content.length}字, 思考${retry.reasoningChars}字, ${retry.ms}ms)`)
+      // 重试仍撞上限 = 正文本身就超过模型输出上限，再试无用
+      if (retry.result.finishReason === 'length') opts.onOutputLimit?.()
+      // 半截代码不外流（不完整的内容对用户没用），交给 store 走错误分支给人话提示
+      return ''
     }
-    return res.content
+    // 拿到结果了才通知调用方"本次是降级结果"——这个提示描述的是交付的结果，不是重试这个动作
+    opts.onFallback?.()
+    return retry.result.content
   }
 
   // 默认（未开启深度思考）：首次就用"直接输出、不要思考"的强调 prompt，收敛推理吃预算的卡顿
-  const { result: res } = await call(buildPrompt('直接给出完整代码，不要思考过程，不要分析，立即输出。'))
-  // 兜底：首次仍空（极端需求）时换回基础措辞再试一次，两次措辞不同避免重复失败
-  if (!res.content) {
-    const retry = await call(buildPrompt(''))
-    return retry.result.content
-  }
-  return res.content
+  const first = await call(buildPrompt('直接给出完整代码，不要思考过程，不要分析，立即输出。'))
+  if (usable(first.result)) return first.result.content
+  // 兜底：换回基础措辞再试一次，两次措辞不同避免重复失败
+  const retry = await call(buildPrompt(''))
+  if (usable(retry.result)) return retry.result.content
+  if (retry.result.finishReason === 'length') opts.onOutputLimit?.()
+  return ''
 }
 
 // 按需求修改既有代码（传入 onChunk 即流式）。与 generateCode 同一套深度思考保护：
-// prompt 二分 + reasoning_effort 钳制 + 空结果降级非深度直出，保证深度思考开启时也能拿到结果
+// prompt 二分 + reasoning_effort 钳制 + 没拿到完整结果时降级非深度直出，保证深度思考开启时也能拿到结果
 export async function modifyCode(
   code: string,
   requirement: string,
-  opts: { signal?: AbortSignal; onChunk?: (delta: string) => void; thinking?: boolean; onFallback?: () => void } = {}
+  opts: {
+    signal?: AbortSignal
+    onChunk?: (delta: string) => void
+    thinking?: boolean
+    // 降级重试拿到了结果时回调（描述的是"交付的这份结果来自普通模式"，所以重试失败时不调）
+    onFallback?: () => void
+    // 两次调用都撞 max_tokens 上限时回调：正文本身超过模型单次输出上限，重试救不回来，该提示用户拆小需求
+    onOutputLimit?: () => void
+  } = {}
 ): Promise<string> {
   const deepThink = opts.thinking === true
 
@@ -156,49 +190,58 @@ export async function modifyCode(
     `用户需求：${requirement}`
   ].join('\n')
 
-  const call = async (content: string, extra: { thinking?: boolean; reasoningEffort?: 'low' | 'medium' | 'high' } = {}) => {
-    // 累积本次调用的思考字符数：content 为空时用它区分「思考吃光预算」vs「模型空输出」两类降级原因
+  const call = async (content: string, extra: { thinking?: boolean } = {}) => {
+    // 累积本次调用的思考字符数：仅作日志参考，不参与判定
     let reasoningChars = 0
     const started = Date.now()
+    const thinking = extra.thinking ?? opts.thinking
     const result = await chat({
       messages: [{ role: 'user', content }],
-      // 修改要输出完整代码，预算按代码长度给足；深度思考时 reasoning 与 content 共享预算，顶格 8000
-      // （DeepSeek max_tokens 上限 8192）给思考 + 完整代码最大空间，非深度按代码长度即可
+      // 深度思考时 reasoning 与 content 共享预算，顶格 8000（DeepSeek 上限 8192）给"思考 + 完整代码"。
+      // 降级重试那次也走 deepThink 分支是对的：它虽然关了思考，但正文需要同样大的空间——
+      // 预算按"输出需要多大"定，不按"是否思考"定，别顺手改成跟 thinking 走
       maxTokens: deepThink ? 8000 : Math.min(Math.max(code.length * 2, 2000), 8000),
       signal: opts.signal,
       onChunk: opts.onChunk,
       onReasoning: (delta) => { reasoningChars += delta.length },
       // thinking 透传：false 时 client 关思考（直出），true/缺省时走推理默认
-      thinking: extra.thinking ?? opts.thinking,
+      thinking,
       // 深度思考开启时默认钳制思考到 low：v4-flash 默认/medium/high 都会思考到吃光预算导致 content 空
-      reasoningEffort: extra.reasoningEffort ?? (opts.thinking === true ? 'low' : undefined)
+      reasoningEffort: thinking ? 'low' : undefined
     })
     return { result, reasoningChars, ms: Date.now() - started }
   }
 
   // 深度思考：用户显式开启，用鼓励分析的 prompt；钳制思考保证 content 有预算。
-  // 兜底：思考仍吃光预算导致 content 空时，降级非深度直出重试一次，保证能拿到结果
+  // 兜底：没拿到完整结果（正文空、或撞上限被截断）时，降级非深度直出重试一次
   if (deepThink) {
-    const { result: res, reasoningChars, ms } = await call(deepPrompt)
-    if (!res.content) {
-      // 控制台定位：content 空 = 触发降级；思考字符数大 → 思考吃光预算，小/零 → 模型空输出
-      const cause = reasoningChars > 2000 ? '思考吃光预算' : '模型空输出'
-      console.warn(`[ai-modify] 深度思考返回空(思考${reasoningChars}字/${ms}ms) → ${cause}，降级非深度直出重试`)
-      // 通知调用方本次是降级结果（UI 据此提示用户"深度思考未生效，生成的是普通模式结果"）
-      opts.onFallback?.()
-      const retry = await call(buildPrompt('直接输出修改后的完整代码，不要思考过程，不要分析，立即输出。'), { thinking: false, reasoningEffort: undefined })
-      if (!retry.result.content) console.warn(`[ai-modify] 降级重试仍返回空(思考${retry.reasoningChars}字/${retry.ms}ms)`)
-      return retry.result.content
+    const first = await call(deepPrompt)
+    if (usable(first.result)) return first.result.content
+
+    console.warn(
+      `[ai-modify] 深度思考未拿到完整结果(finish=${first.result.finishReason}, ` +
+      `正文${first.result.content.length}字, 思考${first.reasoningChars}字, ${first.ms}ms) → 降级非深度直出重试`
+    )
+    // 关闭思考后预算全留给正文，空 / 截断都能被这一次重试救回
+    const retry = await call(buildPrompt('直接输出修改后的完整代码，不要思考过程，不要分析，立即输出。'), { thinking: false })
+    if (!usable(retry.result)) {
+      console.warn(`[ai-modify] 降级重试仍未拿到完整结果(finish=${retry.result.finishReason}, 正文${retry.result.content.length}字, 思考${retry.reasoningChars}字, ${retry.ms}ms)`)
+      // 重试仍撞上限 = 正文本身就超过模型输出上限（长代码整体改写最容易撞），再试无用
+      if (retry.result.finishReason === 'length') opts.onOutputLimit?.()
+      // 半截代码不外流（不完整的内容对用户没用，diff 还会把它显示成"原文被删掉了"），交给 store 报错
+      return ''
     }
-    return res.content
+    // 拿到结果了才通知调用方"本次是降级结果"——这个提示描述的是交付的结果，不是重试这个动作
+    opts.onFallback?.()
+    return retry.result.content
   }
 
   // 默认（未开启深度思考）：首次就用"直接输出、不要思考"的强调 prompt，收敛推理吃预算的卡顿
-  const { result: res } = await call(buildPrompt('直接输出修改后的完整代码，不要思考过程，不要分析，立即输出。'))
-  // 兜底：首次仍空（极端需求）时换回基础措辞再试一次，两次措辞不同避免重复失败
-  if (!res.content) {
-    const retry = await call(buildPrompt(''))
-    return retry.result.content
-  }
-  return res.content
+  const first = await call(buildPrompt('直接输出修改后的完整代码，不要思考过程，不要分析，立即输出。'))
+  if (usable(first.result)) return first.result.content
+  // 兜底：换回基础措辞再试一次，两次措辞不同避免重复失败
+  const retry = await call(buildPrompt(''))
+  if (usable(retry.result)) return retry.result.content
+  if (retry.result.finishReason === 'length') opts.onOutputLimit?.()
+  return ''
 }

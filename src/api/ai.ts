@@ -17,5 +17,5 @@ export type {
 export { AIError, isAbortError } from './client'
 export type { AIErrorCode } from './client'
 export { generateDescription, generateCode, modifyCode } from './tasks'
-export { assistantTurn, summarizeThinking } from './assistant'
+export { assistantTurn, summarizeThinking, logAiCall } from './assistant'
 export { REVERSIBLE_OPS, OP_FOLDER } from './operateMeta'

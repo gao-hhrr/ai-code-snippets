@@ -60,13 +60,14 @@ const ACTIONS = ['search', 'summarize', 'operate', 'ask', 'chat'] as const
 interface AiCallLog {
   t: string
   action: string
-  candidates: number
-  promptChars: number
+  // 助手链路专属字段（候选数 / prompt 体积），改可选是为了让别的 AI 链路也能复用这个日志
+  candidates?: number
+  promptChars?: number
   ms: number
   errCode?: string
   errMsg?: string
 }
-function logAiCall(entry: Omit<AiCallLog, 't' | 'ms'> & { ms: number }) {
+export function logAiCall(entry: Omit<AiCallLog, 't' | 'ms'> & { ms: number }) {
   try {
     const key = 'ai-call-log'
     const list: AiCallLog[] = JSON.parse(localStorage.getItem(key) || '[]')

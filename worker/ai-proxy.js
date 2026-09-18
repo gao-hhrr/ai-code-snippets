@@ -26,7 +26,15 @@ export default {
     const headers = corsHeaders(env.ALLOWED_ORIGIN, request.headers.get('Origin'))
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers })
     if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405, headers })
-    if (!env.AI_API_KEY) return new Response('Proxy missing AI_API_KEY secret', { status: 500, headers })
+    // 必须回 JSON：前端只从 JSON 的 error.message 取详情，纯文本会在 JSON.parse 那步丢掉，
+    // 于是这个"配置错误"就被当成 500「服务器繁忙，请稍后重试」——而它永远不会好。
+    // 前端按 body 里的 'proxy missing' 识别（见 client.ts 的 describeAIError）
+    if (!env.AI_API_KEY) {
+      return new Response(JSON.stringify({ error: { message: 'proxy missing AI_API_KEY secret' } }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...headers }
+      })
+    }
 
     const upstream = await fetch(UPSTREAM, {
       method: 'POST',
