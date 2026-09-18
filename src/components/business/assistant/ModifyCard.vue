@@ -7,11 +7,19 @@ import { computed } from 'vue'
 import type { AssistantTurnMessage } from '@/api/ai'
 import DiffView from '@/components/editor/DiffView.vue'
 import { useAiAssistantStore } from '@/stores/aiAssistantStore'
+import { useSnippetStore } from '@/stores/snippetStore'
 
 const props = defineProps<{ msg: AssistantTurnMessage; originalCode: string }>()
 const emit = defineEmits<{ saveAsNew: []; replace: []; export: []; undoReplace: []; view: [snippetId: string] }>()
 
 const assistantStore = useAiAssistantStore()
+const snippetStore = useSnippetStore()
+// 目标片段是否已被删除：改完代码又去把原片段删了是常见操作，此时「替换」「撤销」都没有落点，
+// 只有「保存为新片段」还能把 AI 结果救回来（store 侧同名判断决定另存放不放行，这里只管界面）
+const targetMissing = computed(() => {
+  const id = props.msg.searchIds?.[0]
+  return !!id && !snippetStore.snippets.some(s => s.id === id)
+})
 // 等待提示随深度思考开关变化：开启时推理更长，超时放宽到 DEEP_THINK_TIMEOUT。
 // 秒数取自 store 的超时常量（单一来源），改超时不用回来改文案
 const waitHint = computed(() => assistantStore.deepThink
@@ -58,18 +66,22 @@ const waitHint = computed(() => assistantStore.deepThink
           v-if="props.msg.modifiedDegraded"
           class="mb-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 leading-relaxed"
         >⚠ 深度思考未生效，已降级为普通模式修改——本次修改未经过深度推理，复杂需求下质量可能打折。</div>
+        <div
+          v-if="targetMissing"
+          class="mb-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 leading-relaxed"
+        >⚠ 原片段已被删除——无法再「替换原代码」或「撤销替换」。下方是 AI 生成的完整代码，可「保存为新片段」保留。</div>
         <DiffView :original="props.originalCode" :modified="props.msg.modifiedCode" />
         <div class="mt-3 flex flex-wrap gap-3">
           <button
             class="inline-flex items-center gap-1.5 px-4 py-2 bg-github-blue text-white rounded-lg text-sm font-medium hover:bg-github-blue-dark transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            :disabled="props.msg.modifyApplied"
+            :disabled="props.msg.modifyApplied && !targetMissing"
             title="保存前可在编辑页调整标题/语言/代码"
             @click="emit('saveAsNew')"
           >保存为新片段</button>
           <button
             class="inline-flex items-center gap-1.5 px-4 py-2 bg-zinc-200 text-zinc-800 rounded-lg text-sm font-medium hover:bg-zinc-300 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-            :disabled="props.msg.modifyApplied"
-            title="覆盖原代码，操作前会再次确认"
+            :disabled="props.msg.modifyApplied || targetMissing"
+            :title="targetMissing ? '原片段已删除，无法替换' : '覆盖原代码，替换后可撤销；操作前会再次确认'"
             @click="emit('replace')"
           >替换原代码</button>
           <button
@@ -77,7 +89,7 @@ const waitHint = computed(() => assistantStore.deepThink
             @click="emit('export')"
           >导出</button>
           <button
-            v-if="props.msg.modifyApplied && props.msg.modifyBackup"
+            v-if="props.msg.modifyApplied && props.msg.modifyBackup && !targetMissing"
             class="inline-flex items-center gap-1.5 px-4 py-2 text-red-600 bg-red-50 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors cursor-pointer"
             title="用替换前暂存的原代码恢复该片段"
             @click="emit('undoReplace')"
@@ -88,7 +100,8 @@ const waitHint = computed(() => assistantStore.deepThink
           点「保存为新片段」会先进入编辑页，可调整标题/语言/代码后再保存。
         </p>
         <p v-if="props.msg.modifyApplied" class="flex items-center gap-1.5 text-xs text-github-blue mt-2">
-          <span>{{ props.msg.modifyBackup ? '已替换原代码' : '已保存为新片段' }}</span>
+          <!-- 有 backup = 走过替换；原片段随后被删则替换已无意义，不能还显示「已替换原代码」 -->
+          <span>{{ props.msg.modifyBackup ? (targetMissing ? '原片段已删除，替换已失效' : '已替换原代码') : '已保存为新片段' }}</span>
           <a
             v-if="props.msg.modifySavedSnippetId"
             class="underline cursor-pointer hover:text-github-blue-dark"

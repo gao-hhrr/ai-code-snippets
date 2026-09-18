@@ -138,10 +138,12 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 状态与常量
   // ════════════════════════════════════════════════════════
   // 对话从 sessionStorage 恢复（临时状态，关标签页即清）。
-  // 恢复时把"生成中"复位成失败：刷新 = 请求已丢，保留 running 会恢复出永久转圈的卡
+  // 恢复时把"生成中"复位成失败：刷新 = 请求已丢，保留 running 会恢复出永久转圈的卡。
+  // 两条都必须补一句人话——两张卡的 error 分支都只渲染 msg.content（buildOperateMsg 里初值是空串），
+  // 不补就只剩标题「操作失败 / 修改未能完成」、正文空白，用户看不出发生了什么
   const messages = ref<AssistantTurnMessage[]>(loadAIConversation().map(m => {
     if (m.modifyState === 'running') return { ...m, modifyState: 'error', content: m.content + '（修改被中断，请重新发起）' }
-    if (m.operateState === 'running') return { ...m, operateState: 'error' }
+    if (m.operateState === 'running') return { ...m, operateState: 'error', content: m.content + '（代码生成被中断，请重新发起）' }
     return m
   }))
   const sending = ref(false)
@@ -548,20 +550,22 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 修改流程：AI 修改代码的另存 / 替换 / 撤销 / 导出 + 编辑页回传
   // ════════════════════════════════════════════════════════
-  // 保存 AI 修改为新片段：写草稿跳编辑页预填（标题/语言继承原片段），保存才真正 addSnippet。
+  // 保存 AI 修改为新片段：写草稿跳编辑页预填（标题/语言继承原片段，原片段已删则走兜底），保存才真正 addSnippet。
   // 与 create 共用 DRAFT_KEY 不冲突——一次只会有一个「进编辑页」的在途流程
   function saveModifyToEditor(msg: AssistantTurnMessage) {
-    if (!msg.modifiedCode || !msg.searchIds?.length || msg.modifyApplied) return
+    if (!msg.modifiedCode || !msg.searchIds?.length) return
     const target = snippetStore.snippets.find(s => s.id === msg.searchIds![0])
-    if (!target) return
+    // 原片段已被删除时「替换」等于没落地（改的那个片段都不在了），此时不该再被 modifyApplied 拦住——
+    // 另存是唯一还能把 AI 结果救回来的动作，让它照常走
+    if (msg.modifyApplied && target) return
     // 标题带修改要点：多版本另存可区分（原「(AI 优化)」固定后缀，存几个都同名）
     const tag = (msg.requirement || '').replace(/^改成/, '').trim().slice(0, 12) || '优化'
     sessionStorage.setItem(DRAFT_KEY, JSON.stringify({
       id: null,
-      title: target.title + `（AI 优化·${tag}${(msg.requirement || '').trim().length > 12 ? '…' : ''}）`,
+      title: `${target?.title ?? '未命名片段'}（AI 优化·${tag}${(msg.requirement || '').trim().length > 12 ? '…' : ''}）`,
       code: msg.modifiedCode,
-      language: target.language,
-      description: target.description || ''
+      language: target?.language || 'JavaScript',
+      description: target?.description || ''
     }))
     msg.modifySave = 'pending'
   }
@@ -576,8 +580,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     }
   }
 
-  // 用 AI 修改替换原代码：覆盖现有内容不可逆，调用前页面须弹二次确认框；
-  // 替换前把原代码暂存到 msg（随对话落盘），卡片显示「撤销替换」可一键恢复
+  // 用 AI 修改替换原代码：调用前页面须弹二次确认框；
+  // 替换前把原代码暂存到 msg（随对话落盘），卡片据此显示「撤销替换」可一键恢复
   function replaceModify(msg: AssistantTurnMessage) {
     if (!msg.modifiedCode || !msg.searchIds?.length || msg.modifyApplied) return
     const target = snippetStore.snippets.find(s => s.id === msg.searchIds![0])
@@ -590,7 +594,11 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 撤销替换：用替换前暂存的原代码恢复，modifyApplied 回退为未应用（按钮重新可点）
   function undoReplace(msg: AssistantTurnMessage) {
     if (!msg.modifyApplied || !msg.modifyBackup || !msg.searchIds?.length) return
-    snippetStore.updateSnippet(msg.searchIds![0], { code: msg.modifyBackup })
+    const id = msg.searchIds[0]
+    // 目标片段可能已被删除，而 updateSnippet 找不到 id 是静默 no-op：照样往下走会把状态翻成
+    // 「未应用」、备份也清掉，但代码根本没恢复（假成功 + 备份永久丢失）。找不到就整条都不做
+    if (!snippetStore.snippets.some(s => s.id === id)) return
+    snippetStore.updateSnippet(id, { code: msg.modifyBackup })
     msg.modifyApplied = false
     msg.modifyBackup = undefined
   }

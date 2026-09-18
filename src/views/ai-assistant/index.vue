@@ -78,7 +78,7 @@ onBeforeUnmount(() => {
   unbindScroll()
 })
 
-// AI 修改的"替换原代码"二次确认（覆盖现有内容不可逆，弹框确认后才落库）
+// AI 修改的"替换原代码"二次确认（覆盖现有内容，弹框确认后才落库；替换前会暂存原代码供卡片上「撤销替换」）
 const replaceTarget = ref<AssistantTurnMessage | null>(null)
 function confirmReplace(msg: AssistantTurnMessage) {
   replaceTarget.value = msg
@@ -247,11 +247,11 @@ watch(
     <!-- 底部输入：浮空盖在对话区上方——absolute 定位盖住滚动区底部，消息滚到下面被渐变柔和遮住。
          pointer-events-none 外套 + 居中列：右侧滚动条露在 max-w 外侧不被不透明条盖住，仍可拖动 -->
     <ChatInputBar ref="inputBar" />
-    <!-- AI 修改的"替换原代码"二次确认：覆盖原代码不可逆，确认后才落库 -->
+    <!-- AI 修改的"替换原代码"二次确认：覆盖原代码，确认后才落库（替换前暂存原代码，卡片上可撤销） -->
     <ConfirmDialog
       :show="!!replaceTarget"
       title="替换原代码"
-      message="AI 将覆盖该片段的原代码，替换后原代码不可恢复。确认替换吗？"
+      message="AI 将覆盖该片段的原代码。替换后在卡片上点「撤销替换」可还原。确认替换吗？"
       confirm-text="替换"
       danger
       @cancel="replaceTarget = null"
