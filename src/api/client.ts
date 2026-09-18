@@ -3,7 +3,8 @@
 // ════════════════════════════════════════════════════════
 import type { ChatMessage } from './types'
 
-// 稳定错误码：UI 按 code 分组展示可操作建议，调试者靠 code 定位根因（不再只靠人话文案猜）
+// 稳定错误码：code → 可操作人话的映射在 describeAIError 一处收口，UI 只显示人话；
+// code 本身不进界面，供日志与排障定位根因（不再只靠人话文案猜）
 export type AIErrorCode =
   | 'ERR_KEY_MISSING'      // 未配置 API Key
   | 'ERR_UNAUTHORIZED'     // 401 Key 无效

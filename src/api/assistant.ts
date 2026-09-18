@@ -136,9 +136,9 @@ export async function assistantTurn(
   // 持久 system 层（角色/规则/示例/防注入声明）：跨轮复用，见 prompt.ts buildSystemPrompt
   const system = buildSystemPrompt()
 
-  // 每个 return 出口统一记一条诊断日志（done 收口），errCode 用于调试者定位
-  const done = (action: string, reply: AssistantReply, errCode?: string, errMsg?: string) => {
-    logAiCall({ action, candidates: candidates.length, promptChars: system.length + prompt.length, ms: Date.now() - startedAt, errCode, errMsg })
+  // 每个 return 出口统一记一条诊断日志（done 收口）
+  const done = (action: string, reply: AssistantReply) => {
+    logAiCall({ action, candidates: candidates.length, promptChars: system.length + prompt.length, ms: Date.now() - startedAt })
     return { ...reply }
   }
 
@@ -161,8 +161,10 @@ export async function assistantTurn(
   const prompt = buildUserPrompt({ candidates, snippets, folders, history, message, codeLimit, lastSearchNums })
 
   // 合法响应判定：只认已识别的工具调用，未走工具一律判无效重试；不再解析 content JSON
-  // （实测 22/22 轮模型稳定走工具）
+  // （实测 22/22 轮模型稳定走工具）。撞 max_tokens 上限同样判无效——工具名可能整段到达而
+  // arguments 被截断（解析成空对象会静默带参执行），且此时重试一次是能救回来的
   const isValidResult = (r: ChatResult) => {
+    if (r.finishReason === 'length') return false
     const tc = r.toolCalls?.[0]
     return !!tc && (ACTIONS as readonly string[]).includes(tc.name)
   }

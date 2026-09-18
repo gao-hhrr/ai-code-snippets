@@ -51,6 +51,8 @@ export async function generateCode(
   opts: {
     signal?: AbortSignal
     onChunk?: (delta: string) => void
+    // 503 过载开始退避重试时回调（attempt：即将进行的第几次尝试，1 起）
+    onRetry?: (attempt: number) => void
     thinking?: boolean
     // 降级重试拿到了结果时回调（描述的是"交付的这份结果来自普通模式"，所以重试失败时不调）
     onFallback?: () => void
@@ -95,6 +97,7 @@ export async function generateCode(
       maxTokens: 8192,
       signal: opts.signal,
       onChunk: opts.onChunk,
+      onRetry: opts.onRetry,
       onReasoning: (delta) => { reasoningChars += delta.length },
       // thinking 透传：false 时 client 关思考（直出），true/缺省时走推理默认
       thinking,
@@ -146,6 +149,8 @@ export async function modifyCode(
   opts: {
     signal?: AbortSignal
     onChunk?: (delta: string) => void
+    // 503 过载开始退避重试时回调（attempt：即将进行的第几次尝试，1 起）
+    onRetry?: (attempt: number) => void
     thinking?: boolean
     // 降级重试拿到了结果时回调（描述的是"交付的这份结果来自普通模式"，所以重试失败时不调）
     onFallback?: () => void
@@ -203,6 +208,7 @@ export async function modifyCode(
       maxTokens: deepThink ? 8000 : Math.min(Math.max(code.length * 2, 2000), 8000),
       signal: opts.signal,
       onChunk: opts.onChunk,
+      onRetry: opts.onRetry,
       onReasoning: (delta) => { reasoningChars += delta.length },
       // thinking 透传：false 时 client 关思考（直出），true/缺省时走推理默认
       thinking,

@@ -7,7 +7,7 @@ import { defineStore } from 'pinia'
 import { ref, reactive, computed, watch } from 'vue'
 import { useSnippetStore } from '@/stores/snippetStore'
 import { assistantTurn, modifyCode, generateCode, summarizeThinking, AIError, isAbortError, REVERSIBLE_OPS, OP_FOLDER } from '@/api/ai'
-import type { AssistantTurnMessage, AssistantReply, OperateStep, OperateOp, AIErrorCode } from '@/api/ai'
+import type { AssistantTurnMessage, AssistantReply, OperateStep, OperateOp } from '@/api/ai'
 import { downloadText, langToExt } from '@/services/file'
 import { loadAIConversation, persistAIConversation } from '@/services/storage'
 import { DRAFT_KEY } from '@/composables/useDraft'
@@ -127,10 +127,8 @@ function aiFailText(err: unknown, fallback: string): string {
   return `（${err.message}）`
 }
 
-// UI 提示槽里可能出现的 code = AI 调用层的错误（11）+ 本地产生的（3：超时 / 主动停止 / 轮数上限）。
-// 不并进 AIErrorCode：那个类型的含义是"AI 调用失败的原因"，而"用户按了停止"根本不是 AI 失败——
-// 并进去会让那个类型失去意义。错误 vs 状态由 tone 区分，不靠 code
-type NoticeCode = AIErrorCode | 'ERR_TIMEOUT' | 'ERR_ABORTED' | 'ERR_LIMIT'
+// UI 提示槽只承载"给人看的一句话"：错误码 / HTTP 状态 / 服务端原文都只进 console 与 ai-call-log，
+// 不进 UI——用户不会自己读码，展开看码不如直接看人话；排障要的定位信息在日志里
 
 
 export const useAiAssistantStore = defineStore('aiAssistant', () => {
@@ -147,10 +145,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
     return m
   }))
   const sending = ref(false)
-  // 结构化错误：人话 text 给用户看，code/status/detail 供「详情」展开与调试定位
   // tone：默认 'error'（红字）；'info' 给"用户主动停止""到达轮数上限"这类**状态**——
   // 它们不是错误，用红字报警会让用户以为出问题了
-  const error = ref<{ text: string; code?: NoticeCode; status?: number; detail?: string; tone?: 'error' | 'info' } | null>(null)
+  const error = ref<{ text: string; tone?: 'error' | 'info' } | null>(null)
   // 本轮等待秒数（sending 期间每秒 +1）：超过阈值页面切换"AI 思考中"阶段提示
   const elapsed = ref(0)
   // 最近一次发送的用户消息（供「重试」一键重发）
@@ -196,6 +193,11 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // 新建独立超时：非深度实测极端需求 42s 内，90s 兜底；深度思考（推理）才需 180s 给极限需求收敛空间
   const CREATE_TIMEOUT = 90_000
   const DEEP_THINK_TIMEOUT = 180_000
+  // 等待文案里的秒数单一来源：模板引用这几个值，改上面的超时常量时文案自动跟着变（不再各处手抄数字）
+  const requestTimeoutSec = REQUEST_TIMEOUT / 1000
+  const modifyTimeoutSec = MODIFY_TIMEOUT / 1000
+  const createTimeoutSec = CREATE_TIMEOUT / 1000
+  const deepThinkTimeoutSec = DEEP_THINK_TIMEOUT / 1000
   const controller = ref<AbortController | null>(null)
   // 修改流程的独立控制器：与搜索请求互不牵连，用户点停止时由 stop 一并中断
   let modifyController: AbortController | null = null
@@ -245,7 +247,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
 
     // 轮数只统计用户消息，divider、assistant 回复不计入
     if (messages.value.filter(m => m.role === 'user').length >= MAX_TURNS) {
-      error.value = { text: '对话已达上限，点击「重新开始」开启新对话', code: 'ERR_LIMIT', tone: 'info' }
+      error.value = { text: '对话已达上限，点击「重新开始」开启新对话', tone: 'info' }
       return
     }
 
@@ -298,7 +300,7 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
         } catch (err) {
           if (!isAbortError(err)) {
             console.error('[ai-operate] 本地操作执行失败', err)
-            error.value = { text: '操作执行失败，请重试', code: 'ERR_FALLBACK' }
+            error.value = { text: '操作执行失败，请重试' }
           }
         }
         return
@@ -313,14 +315,15 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       // 中止分两类：超时 vs 用户手动停止，给不同文案
       if (isAbortError(err)) {
         error.value = timedOut
-          ? { text: '搜索超时（60 秒）：AI 推理较慢或网络不稳，已自动停止，请点重试', code: 'ERR_TIMEOUT' }
+          ? { text: `搜索超时（${requestTimeoutSec} 秒）：AI 推理较慢或网络不稳，已自动停止，请点重试` }
           // 用户自己按的停止，不是错误 → tone:'info'，别用红字报警
-          : { text: '已停止搜索', code: 'ERR_ABORTED', tone: 'info' }
+          : { text: '已停止搜索', tone: 'info' }
       } else if (err instanceof AIError) {
-        error.value = { text: err.message, code: err.code, status: err.status, detail: err.detail }
+        // 只取人话上屏；err.code / status / detail 由 assistantTurn 的 logAiCall 落进日志
+        error.value = { text: err.message }
       } else {
         // 兜底：助手在发请求之前（召回 / prompt 组装）抛出的意外异常
-        error.value = { text: 'AI 助手出错了，请重试', code: 'ERR_FALLBACK' }
+        error.value = { text: 'AI 助手出错了，请重试' }
       }
     } finally {
       // 必清理：防内存泄漏；controller 用守卫判断，避免覆盖 reset() 的新赋值
@@ -389,6 +392,9 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       operateField: step.field,
       // modify 不设 operateState：走 ModifyCard 渲染（modifyState 字段组），OperateCard 不会误渲染
       operateState: step.op === 'modify' ? undefined : (step.op === 'create' ? 'running' : 'pending'),
+      // 反向同理：modify 由 modifyState 组控。必须显式置 running——ModifyCard 靠它渲染（v-if="msg.modifyState"）、
+      // WaitingIndicator 靠它判断"已进入生成"（否则显示的还是识别轮的四步阶段）、刷新恢复也靠它识别中断
+      modifyState: step.op === 'modify' ? 'running' : undefined,
       targetTitle: isFolderOp ? (step.op === 'renameFolder' ? step.target : step.value) : (target?.title || '')
     })
   }
@@ -417,6 +423,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       const result = await modifyCode(target.code, step.value, {
         signal: mc.signal,
         thinking: deepThink.value,
+        // 服务器繁忙退避重试：等待期长达 30 秒，给用户"在重试"的提示，别让卡片只转圈
+        onRetry: () => { retrying.value = true },
         onChunk: (delta) => {
           msg.modifyProgress = (msg.modifyProgress ?? 0) + delta.length
         },
@@ -460,6 +468,8 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
       const code = await generateCode(step.value || '', step.language || 'text', {
         signal: cc.signal,
         thinking: deepThink.value,
+        // 服务器繁忙退避重试：等待期长达 30 秒，给用户"在重试"的提示，别让卡片只转圈
+        onRetry: () => { retrying.value = true },
         onChunk: (delta) => {
           msg.createdProgress = (msg.createdProgress ?? 0) + delta.length
         },
@@ -631,5 +641,6 @@ export const useAiAssistantStore = defineStore('aiAssistant', () => {
   // ════════════════════════════════════════════════════════
   // 导出
   // ════════════════════════════════════════════════════════
-  return { messages, sending, retrying, reasoning, composing, phase, elapsed, error, lastUserText, deepThink, MAX_TURNS, reset, stop, send, retry, switchTopic, saveModifyToEditor, resolveModifyFromEditor, replaceModify, undoReplace, exportModify, seedContext, runOperate, confirmOperate, confirmCreateToEditor, resolveCreateFromEditor, cancelOperate }
+  return { messages, sending, retrying, reasoning, composing, phase, elapsed, error, lastUserText, deepThink, MAX_TURNS,
+    requestTimeoutSec, modifyTimeoutSec, createTimeoutSec, deepThinkTimeoutSec, reset, stop, send, retry, switchTopic, saveModifyToEditor, resolveModifyFromEditor, replaceModify, undoReplace, exportModify, seedContext, runOperate, confirmOperate, confirmCreateToEditor, resolveCreateFromEditor, cancelOperate }
 })

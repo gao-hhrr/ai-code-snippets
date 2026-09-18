@@ -1,5 +1,5 @@
 <!-- ════════════════════════════════════════════════════════
-     ChatInputBar —— AI 助手底部输入区：错误提示+重试+详情展开、输入框+发送/停止、换话题/重新开始
+     ChatInputBar —— AI 助手底部输入区：错误提示+重试、输入框+发送/停止、换话题/重新开始
      直接用 store；输入聚焦由页面经模板 ref 调 focusInput() 接管（返回/重新激活时自动聚焦）
      ════════════════════════════════════════════════════════ -->
 <script setup lang="ts">
@@ -9,7 +9,6 @@ import { useAiAssistantStore } from '@/stores/aiAssistantStore'
 const assistantStore = useAiAssistantStore()
 const input = ref('')
 const inputEl = ref<HTMLTextAreaElement | null>(null)
-const showDetail = ref(false)
 
 // 输入框自动增高：随内容生长，超 160px 内部滚动（多行粘贴代码不顶破底部浮层）
 function autoGrow() {
@@ -19,18 +18,13 @@ function autoGrow() {
   el.style.height = Math.min(el.scrollHeight, 160) + 'px'
 }
 
-// 错误详情拼接：错误码 / HTTP 状态 / 响应片段，供「详情」展开调试定位
-function formatErrorDetail(e: { code?: string; status?: number; detail?: string } | null): string {
-  if (!e) return ''
-  const parts = [e.code || '未知错误']
-  if (e.status) parts.push(`HTTP ${e.status}`)
-  if (e.detail) parts.push(e.detail)
-  return parts.join('\n')
-}
-const errorDetail = computed(() => formatErrorDetail(assistantStore.error))
-
 // 只有真错误用红字；"已停止搜索""对话已达上限"是**状态**不是错误，用中性灰（tone:'info'）
 const errorTone = computed(() => assistantStore.error?.tone === 'info' ? 'text-zinc-500' : 'text-red-500')
+
+// 深度思考开关的悬浮说明：秒数取自 store 的超时常量（单一来源），不手抄
+const deepThinkTip = computed(() =>
+  `深度思考：生成/修改代码时先深度推理再作答，复杂需求质量更高但更慢（开启后最长约 ${assistantStore.deepThinkTimeoutSec} 秒）；关闭则用普通模式直接输出、更快`
+)
 
 // 对话轮数上限：只数 user 消息，达到后禁用输入并提示开启新对话
 const reachedLimit = () => assistantStore.messages.filter(m => m.role === 'user').length >= assistantStore.MAX_TURNS
@@ -65,22 +59,13 @@ defineExpose({ focusInput: () => inputEl.value?.focus() })
         <!-- 渐变遮罩：消息沉入底部前柔和淡出，避免硬切 -->
         <div class="h-12" style="background: linear-gradient(to top, var(--color-zinc-50), transparent)"></div>
         <div class="bg-zinc-50 px-4 sm:px-6 py-5 pointer-events-auto">
-          <div v-if="assistantStore.error" class="text-xs mb-2 space-y-1" :class="errorTone">
-            <div class="flex items-start justify-between gap-2">
-              <span class="min-w-0 break-words">{{ assistantStore.error.text }}</span>
-              <button
-                v-if="assistantStore.lastUserText && !reachedLimit()"
-                class="shrink-0 px-2 py-1 text-xs text-github-blue border border-github-blue/40 rounded-md hover:bg-github-blue-light transition-colors cursor-pointer"
-                @click="assistantStore.retry()"
-              >重试</button>
-            </div>
-            <!-- 技术详情：错误码/HTTP 状态/响应片段，默认收起，调试时展开定位 -->
-            <div v-if="assistantStore.error.code || assistantStore.error.detail" class="flex flex-col gap-1">
-              <button class="self-start text-zinc-400 hover:text-zinc-600 cursor-pointer" @click="showDetail = !showDetail">
-                {{ showDetail ? '收起详情' : '详情' }}
-              </button>
-              <pre v-if="showDetail" class="whitespace-pre-wrap break-all text-zinc-400 leading-relaxed">{{ errorDetail }}</pre>
-            </div>
+          <div v-if="assistantStore.error" class="flex items-start justify-between gap-2 text-xs mb-2" :class="errorTone">
+            <span class="min-w-0 break-words">{{ assistantStore.error.text }}</span>
+            <button
+              v-if="assistantStore.lastUserText && !reachedLimit()"
+              class="shrink-0 px-2 py-1 text-xs text-github-blue border border-github-blue/40 rounded-md hover:bg-github-blue-light transition-colors cursor-pointer"
+              @click="assistantStore.retry()"
+            >重试</button>
           </div>
           <div v-else-if="reachedLimit()" class="text-xs text-zinc-500 mb-2">对话已达上限，点击「重新开始」开启新对话</div>
           <div
@@ -110,7 +95,7 @@ defineExpose({ focusInput: () => inputEl.value?.focus() })
               :class="assistantStore.deepThink
                 ? 'bg-github-blue-light text-github-blue'
                 : 'text-zinc-500 hover:text-zinc-700'"
-              title="深度思考：生成/修改代码时先深度推理再作答，复杂需求质量更高但更慢（开启后最长约 180 秒）；关闭则用普通模式直接输出、更快"
+              :title="deepThinkTip"
               :disabled="assistantStore.sending"
               @click="assistantStore.deepThink = !assistantStore.deepThink"
             >深度思考</button>

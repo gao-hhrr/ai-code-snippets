@@ -60,7 +60,7 @@ function phaseState(p: 'retrieve' | 'analyze' | 'compose' | null, i: number): 'd
           </span>
         </div>
         <!-- 思考中：只显示阶段进度 + 时长，不展示思考原文（原文等结束后二次总结成四步，展开折叠面板查看） -->
-        <div v-if="assistantStore.reasoning" class="text-sm text-zinc-400">正在思考…（已等 {{ assistantStore.elapsed }} 秒{{ assistantStore.elapsed > 20 ? '，AI 推理较慢，最长约 60 秒' : '' }}）</div>
+        <div v-if="assistantStore.reasoning" class="text-sm text-zinc-400">正在思考…（已等 {{ assistantStore.elapsed }} 秒{{ assistantStore.elapsed > 20 ? `，AI 推理较慢，最长约 ${assistantStore.requestTimeoutSec} 秒` : '' }}）</div>
         <div v-else class="text-sm text-zinc-400">正在梳理信息…（已等待 {{ assistantStore.elapsed }} 秒）</div>
       </template>
     </div>

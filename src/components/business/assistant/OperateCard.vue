@@ -9,8 +9,11 @@ import type { Snippet } from '@/types'
 import { useAiAssistantStore } from '@/stores/aiAssistantStore'
 
 const assistantStore = useAiAssistantStore()
-// 等待提示随深度思考开关变化：开启时推理更长，超时放宽到 180s
-const waitHint = computed(() => assistantStore.deepThink ? '深度思考中，复杂需求最长约 180 秒，请稍候' : '代码较长或 AI 推理较慢时最长约 90 秒，请稍候')
+// 等待提示随深度思考开关变化：开启时推理更长，超时放宽到 DEEP_THINK_TIMEOUT。
+// 秒数取自 store 的超时常量（单一来源），改超时不用回来改文案
+const waitHint = computed(() => assistantStore.deepThink
+  ? `深度思考中，复杂需求最长约 ${assistantStore.deepThinkTimeoutSec} 秒，请稍候`
+  : `代码较长或 AI 推理较慢时最长约 ${assistantStore.createTimeoutSec} 秒，请稍候`)
 
 // --- 12 种操作文案 + 危险判定（本卡片自包含）---
 const OP_LABEL: Record<string, string> = {
@@ -129,7 +132,7 @@ const emit = defineEmits<{ confirm: []; cancel: []; view: [id: string] }>()
       >{{ operateTitle(props.msg) }}</span>
     </div>
     <div class="p-4">
-      <!-- create 生成代码中：流式进度实时显示，代码较长/推理较慢时最长约 90 秒 -->
+      <!-- create 生成代码中：流式进度实时显示；上限时长见 waitHint（取自 store 的超时常量） -->
       <div v-if="props.msg.operateState === 'running'" class="flex flex-col gap-1.5 text-sm text-zinc-500">
         <div class="flex items-center gap-2">
           <span class="inline-block w-3.5 h-3.5 rounded-full border-2 border-github-blue border-t-transparent animate-spin"></span>
