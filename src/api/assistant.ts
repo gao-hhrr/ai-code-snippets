@@ -107,7 +107,9 @@ export async function summarizeThinking(
   if (text.length < 30) return null
   const prompt = buildSummaryPrompt(text)
   try {
-    const res = await chat({ messages: [{ role: 'user', content: prompt }], maxTokens: 1000, signal: opts.signal })
+    // thinking:false —— 整理成四行是纯格式任务，思考没有加分，却和这四行共享 1000 预算
+    // （缺省走推理默认）。关掉后预算全留给输出，也省一次思考的钱和延迟
+    const res = await chat({ messages: [{ role: 'user', content: prompt }], maxTokens: 1000, thinking: false, signal: opts.signal })
     const summary = res.content.trim()
     return summary.length >= 10 ? summary : null
   } catch {
